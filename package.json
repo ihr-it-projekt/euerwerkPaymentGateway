@@ -1,0 +1,54 @@
+{
+	"name": "euerwerk-payment-gateway",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Payment Gateway zwischen TBShop und EÜRwerk (Buchhaltung) – bindet Stripe und PayPal an.",
+	"type": "module",
+	"engines": {
+		"node": ">=26"
+	},
+	"imports": {
+		"#src/*": "./src/*",
+		"#tests/*": "./tests/*"
+	},
+	"scripts": {
+		"dev": "node --watch --env-file-if-exists=.env src/index.ts",
+		"start": "node src/index.ts",
+		"typecheck": "tsc --noEmit",
+		"lint": "prettier --check . && eslint .",
+		"format": "prettier --write .",
+		"test": "vitest run",
+		"test:unit": "vitest run --project unit",
+		"test:integration": "vitest run --project integration",
+		"test:watch": "vitest",
+		"test:coverage": "vitest run --coverage",
+		"check": "npm run typecheck && npm run lint && npm run test:coverage",
+		"db:generate": "drizzle-kit generate",
+		"db:migrate": "node --env-file-if-exists=.env src/infrastructure/db/migrate.ts"
+	},
+	"dependencies": {
+		"@hono/node-server": "^2.1.4",
+		"@hono/zod-openapi": "^1.6.3",
+		"@scalar/hono-api-reference": "^0.12.11",
+		"drizzle-orm": "^0.45.4",
+		"hono": "^4.13.13",
+		"postgres": "^3.4.9",
+		"stripe": "^23.0.0",
+		"zod": "^4.6.6"
+	},
+	"devDependencies": {
+		"@electric-sql/pglite": "^0.5.9",
+		"@eslint/js": "^10.0.1",
+		"@faker-js/faker": "^10.6.0",
+		"@types/node": "^26.6.5",
+		"@vitest/coverage-v8": "^5.0.4",
+		"drizzle-kit": "^0.31.11",
+		"eslint": "^10.12.0",
+		"eslint-config-prettier": "^10.1.8",
+		"msw": "^3.0.3",
+		"prettier": "^3.9.10",
+		"typescript": "~6.0",
+		"typescript-eslint": "^8.71.1",
+		"vitest": "^5.0.4"
+	}
+}
