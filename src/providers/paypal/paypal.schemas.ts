@@ -5,29 +5,34 @@ export const PayPalTokenResponseSchema = z.object({
 	expires_in: z.number()
 });
 
-export const PayPalLinkSchema = z.object({ href: z.string(), rel: z.string() });
+const MoneySchema = z.object({ currency_code: z.string(), value: z.string() });
 
-export const PayPalOrderResponseSchema = z.object({
+const PayPalItemSchema = z.object({
+	name: z.string(),
+	description: z.string().optional(),
+	quantity: z.string(),
+	unit_amount: MoneySchema,
+	sku: z.string().optional()
+});
+export type PayPalItem = z.infer<typeof PayPalItemSchema>;
+
+const PayPalCaptureSchema = z.object({ id: z.string(), status: z.string() });
+
+const PayPalPurchaseUnitSchema = z.object({
+	reference_id: z.string().optional(),
+	custom_id: z.string().optional(),
+	amount: MoneySchema,
+	items: z.array(PayPalItemSchema).default([]),
+	payments: z.object({ captures: z.array(PayPalCaptureSchema).default([]) }).optional()
+});
+
+export const PayPalOrderSchema = z.object({
 	id: z.string(),
 	status: z.string(),
-	links: z.array(PayPalLinkSchema).default([])
+	links: z.array(z.object({ href: z.string(), rel: z.string() })).default([]),
+	purchase_units: z.array(PayPalPurchaseUnitSchema).default([])
 });
-export type PayPalOrderResponse = z.infer<typeof PayPalOrderResponseSchema>;
-
-export const PayPalCaptureSchema = z.object({ id: z.string(), status: z.string() });
-
-export const PayPalCaptureResponseSchema = z.object({
-	id: z.string(),
-	status: z.string(),
-	purchase_units: z
-		.array(
-			z.object({
-				payments: z.object({ captures: z.array(PayPalCaptureSchema).default([]) }).optional()
-			})
-		)
-		.default([])
-});
-export type PayPalCaptureResponse = z.infer<typeof PayPalCaptureResponseSchema>;
+export type PayPalOrder = z.infer<typeof PayPalOrderSchema>;
 
 export const PayPalVerifyResponseSchema = z.object({
 	verification_status: z.enum(['SUCCESS', 'FAILURE'])
@@ -40,8 +45,9 @@ export const PayPalWebhookEventSchema = z.object({
 });
 export type PayPalWebhookEvent = z.infer<typeof PayPalWebhookEventSchema>;
 
+export const PayPalOrderResourceSchema = z.object({ id: z.string() });
+
 export const PayPalCaptureResourceSchema = z.object({
-	id: z.string(),
 	supplementary_data: z.object({
 		related_ids: z.object({ order_id: z.string() })
 	})

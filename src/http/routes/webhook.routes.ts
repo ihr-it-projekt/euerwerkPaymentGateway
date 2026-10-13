@@ -15,18 +15,19 @@ const parseSource = (value: string): WebhookSource => {
 };
 
 /**
- * Eingehende Provider-Webhooks, ein Endpunkt pro Kanal (stripe, paypal). Wero-Zahlungen laufen
- * über Stripe und kommen daher am Stripe-Endpunkt an. Bewusst ohne zod-openapi: die
- * Signaturprüfung braucht den unveränderten Raw-Body.
+ * Eingehende Provider-Webhooks: `/v1/webhooks/<kanal>/<verschlüsselter EÜRwerk-Key>`.
+ * Wero-Zahlungen laufen über Stripe und kommen am Stripe-Endpunkt an. Bewusst ohne zod-openapi:
+ * die Signaturprüfung braucht den unveränderten Raw-Body.
+ * Fehler bei der Buchung → 5xx → der Provider wiederholt den Webhook (Retry ohne eigene Queue).
  */
 export const createWebhookRoutes = (
 	handleWebhook: Pick<HandleProviderWebhookAction, 'execute'>
 ): Hono =>
-	new Hono().post('/:source/:merchantId', async (c) => {
+	new Hono().post('/:source/:keyToken', async (c) => {
 		const result = await handleWebhook.execute({
 			source: parseSource(c.req.param('source')),
-			merchantId: c.req.param('merchantId'),
+			keyToken: c.req.param('keyToken'),
 			request: { rawBody: await c.req.text(), headers: c.req.header() }
 		});
-		return c.json({ received: true, result }, 200);
+		return c.json({ received: true, ...result }, 200);
 	});

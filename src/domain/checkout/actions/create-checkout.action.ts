@@ -1,15 +1,25 @@
-import type { Merchant } from '../../merchant/models/merchant.schema.ts';
+import type { AccountingGateway } from '../../accounting/models/accounting.port.ts';
+import type { PaymentConfigSource } from '../../config/models/payment-config.port.ts';
 import type { PaymentProviderRegistry } from '../../payment/models/payment-provider.port.ts';
 import { assertProviderConfigured } from '../helpers/assert-provider-configured.helper.ts';
-import { buildCheckout } from '../helpers/build-checkout.helper.ts';
-import type { CheckoutRepository } from '../models/checkout.repository.ts';
-import type { Checkout, CreateCheckoutInput } from '../models/checkout.schema.ts';
+import { calculateAmountTotal } from '../helpers/calculate-amount-total.helper.ts';
+import { formatCheckoutId } from '../helpers/checkout-id.helper.ts';
+import type {
+	CheckoutRequest,
+	CheckoutView,
+	CreateCheckoutInput
+} from '../models/checkout.schema.ts';
 
 interface Dependencies {
-	checkouts: CheckoutRepository;
+	configSource: PaymentConfigSource;
+	accounting: Pick<AccountingGateway, 'upsertContact'>;
 	providers: PaymentProviderRegistry;
 }
 
+/**
+ * Legt die Zahlung beim Provider an. Zustandslos: Konfiguration kommt aus EÜRwerk, alle
+ * Checkout-Daten werden beim Provider abgelegt, der Kunde wird idempotent als Kontakt angelegt.
+ */
 export class CreateCheckoutAction {
 	readonly #deps: Dependencies;
 
@@ -17,18 +27,24 @@ export class CreateCheckoutAction {
 		this.#deps = deps;
 	}
 
-	async execute(merchant: Merchant, input: CreateCheckoutInput): Promise<Checkout> {
-		assertProviderConfigured(merchant.credentials, input.provider);
+	async execute(apiKey: string, input: CreateCheckoutInput): Promise<CheckoutView> {
+		const config = await this.#deps.configSource.load(apiKey);
+		assertProviderConfigured(config, input.provider);
 		const provider = this.#deps.providers[input.provider];
-		const draft = buildCheckout(merchant, input, new Date());
-		provider.assertEligible?.(draft);
-		const checkout = await this.#deps.checkouts.insert(draft);
-		try {
-			const session = await provider.createCheckoutSession(checkout, merchant.credentials);
-			return await this.#deps.checkouts.linkProvider(checkout.id, session);
-		} catch (error) {
-			await this.#deps.checkouts.updateStatus(checkout.id, { status: 'FAILED' });
-			throw error;
-		}
+		const amountTotal = calculateAmountTotal(input.items);
+		provider.assertEligible?.({ currency: input.currency, amountTotal });
+		const contactId = await this.#deps.accounting.upsertContact(apiKey, input.customer);
+		const request: CheckoutRequest = { ...input, amountTotal, contactId };
+		const session = await provider.createCheckoutSession(request, config);
+		return {
+			id: formatCheckoutId(input.provider, session.providerReference),
+			provider: input.provider,
+			status: 'PENDING',
+			reference: input.reference,
+			currency: input.currency,
+			amountTotal,
+			redirectUrl: session.redirectUrl,
+			providerPaymentId: null
+		};
 	}
 }

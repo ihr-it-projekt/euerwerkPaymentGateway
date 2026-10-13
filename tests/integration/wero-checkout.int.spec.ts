@@ -1,68 +1,61 @@
-import { faker } from '@faker-js/faker';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { stripeMock } from '../mock-server/handlers/stripe.handlers.ts';
 import { requestLog } from '../mock-server/request-log.ts';
-import { createCheckout, getCheckout, postCheckout } from './support/checkout-api.ts';
+import { createCheckout, getCheckout, postCheckout, providerRef } from './support/checkout-api.ts';
 import { sendStripeEvent } from './support/provider-webhooks.ts';
 import {
-	createMerchantViaApi,
-	createTestContext,
-	testConfig,
-	type CreatedTestMerchant,
-	type TestContext
+	createTenant,
+	createTestApp,
+	getWebhookUrls,
+	type TestTenant
 } from './support/test-app.ts';
 
-describe('Wero Checkout (über Stripe) – Ende-zu-Ende', () => {
-	let ctx: TestContext;
-	let merchant: CreatedTestMerchant;
+describe('Wero (über Stripe) – zustandsloser Ablauf', () => {
+	const app = createTestApp();
+	let tenant: TestTenant;
 
-	beforeAll(async () => {
-		ctx = await createTestContext();
-		merchant = await createMerchantViaApi(ctx.app);
+	beforeEach(() => {
+		tenant = createTenant();
 	});
 
-	afterAll(async () => {
-		await ctx.close();
-	});
+	it('legt eine auf Wero eingeschränkte Stripe-Session an', async () => {
+		const checkout = await createCheckout(app, tenant.apiKey, { provider: 'wero' });
 
-	it('legt eine auf Wero eingeschränkte Stripe Checkout Session an', async () => {
-		const checkout = await createCheckout(ctx.app, merchant.apiKey, { provider: 'wero' });
-
-		expect(checkout).toMatchObject({ provider: 'wero', status: 'PENDING' });
-		expect(checkout.redirectUrl).toMatch(/^https:\/\/checkout\.stripe\.com\//);
-		const [stripeCall] = requestLog.find('POST', /\/v1\/checkout\/sessions$/);
-		expect(stripeCall?.body).toMatchObject({
+		expect(checkout.id).toMatch(/^wero\.cs_test_/);
+		expect(requestLog.find('POST', /\/v1\/checkout\/sessions$/)[0]?.body).toMatchObject({
 			'allowed_payment_method_types[0]': 'wero',
-			client_reference_id: checkout.id
+			'metadata[pgw_provider]': 'wero'
+		});
+		expect((await getCheckout(app, tenant.apiKey, checkout.id)).provider).toBe('wero');
+	});
+
+	it('bucht über den Stripe-Webhook mit Zahlungsart WERO', async () => {
+		const checkout = await createCheckout(app, tenant.apiKey, { provider: 'wero' });
+		const { stripe: webhookUrl } = await getWebhookUrls(app, tenant.apiKey);
+
+		const response = await sendStripeEvent(app, tenant, {
+			webhookUrl: webhookUrl!,
+			type: 'checkout.session.completed',
+			session: stripeMock.updateSession(providerRef(checkout), {
+				status: 'complete',
+				payment_status: 'paid'
+			})
+		});
+
+		expect(await response.json()).toMatchObject({ result: 'BOOKED' });
+		expect(requestLog.find('POST', /book-amount$/)[0]?.body).toMatchObject({
+			paymentMethod: 'WERO'
 		});
 	});
 
-	it('verarbeitet den Stripe-Webhook, verbucht als Überweisung und benachrichtigt den Shop', async () => {
-		const checkout = await createCheckout(ctx.app, merchant.apiKey, { provider: 'wero' });
-		requestLog.clear();
+	it('Stripe-Checkout-IDs sind nicht als Wero abrufbar und umgekehrt', async () => {
+		const checkout = await createCheckout(app, tenant.apiKey, { provider: 'stripe' });
 
-		const response = await sendStripeEvent(ctx.app, merchant, {
-			type: 'checkout.session.completed',
-			session: {
-				id: checkout.providerReference,
-				payment_status: 'paid',
-				payment_intent: `pi_${faker.string.alphanumeric(24)}`
-			}
+		const response = await app.request(`/v1/checkouts/wero.${providerRef(checkout)}`, {
+			headers: { Authorization: `Bearer ${tenant.apiKey}` }
 		});
 
-		expect(await response.json()).toMatchObject({ result: 'APPLIED' });
-		const paid = await getCheckout(ctx.app, merchant.apiKey, checkout.id);
-		expect(paid).toMatchObject({
-			provider: 'wero',
-			status: 'SUCCEEDED',
-			accountingStatus: 'BOOKED'
-		});
-		const [booking] = requestLog.find('POST', /book-amount$/);
-		expect(booking?.body).toMatchObject({ paymentMethod: 'BANK_TRANSFER' });
-		const [shopCall] = requestLog.find('POST', /payment-gateway\/webhook$/);
-		expect(shopCall?.body).toMatchObject({
-			type: 'checkout.succeeded',
-			data: { id: checkout.id, provider: 'wero' }
-		});
+		expect(response.status).toBe(404);
 	});
 
 	it.each([
@@ -71,41 +64,19 @@ describe('Wero Checkout (über Stripe) – Ende-zu-Ende', () => {
 			'Betrag unter 0,50 €',
 			{ items: [{ name: 'Mini', quantity: 1, unitAmount: 49, taxRate: 19 as const }] }
 		]
-	])('lehnt %s mit 400 ab, ohne Stripe aufzurufen', async (_label, overrides) => {
-		const response = await postCheckout(ctx.app, merchant.apiKey, {
-			provider: 'wero',
-			...overrides
-		});
+	])('lehnt %s mit 400 ab, ohne Stripe oder EÜRwerk-Kontakt', async (_label, overrides) => {
+		const response = await postCheckout(app, tenant.apiKey, { provider: 'wero', ...overrides });
 
 		expect(response.status).toBe(400);
-		expect(await response.json()).toMatchObject({ error: { code: 'VALIDATION_FAILED' } });
 		expect(requestLog.find('POST', /\/v1\/checkout\/sessions$/)).toHaveLength(0);
+		expect(requestLog.find('POST', /\/contacts$/)).toHaveLength(0);
 	});
 
-	it('liefert 422, wenn Wero für den Merchant nicht aktiviert ist', async () => {
-		const withoutWero = await createMerchantViaApi(ctx.app, { wero: undefined });
+	it('liefert 422, wenn Wero in EÜRwerk nicht aktiviert ist', async () => {
+		const withoutWero = createTenant({ wero: null });
 
-		const response = await postCheckout(ctx.app, withoutWero.apiKey, { provider: 'wero' });
+		const response = await postCheckout(app, withoutWero.apiKey, { provider: 'wero' });
 
 		expect(response.status).toBe(422);
-	});
-
-	it('lehnt Merchants mit Wero, aber ohne Stripe-Credentials ab', async () => {
-		const response = await ctx.app.request('/v1/admin/merchants', {
-			method: 'POST',
-			headers: {
-				Authorization: `Bearer ${testConfig.ADMIN_API_KEY}`,
-				'Content-Type': 'application/json'
-			},
-			body: JSON.stringify({
-				name: faker.company.name(),
-				shopWebhookUrl: faker.internet.url(),
-				wero: { acquirer: 'stripe' }
-			})
-		});
-
-		expect(response.status).toBe(400);
-		const body = (await response.json()) as { error: { details: { path: string[] }[] } };
-		expect(body.error.details[0]?.path).toEqual(['wero']);
 	});
 });

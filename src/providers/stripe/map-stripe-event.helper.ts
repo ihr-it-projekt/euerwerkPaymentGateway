@@ -13,21 +13,17 @@ const STATUS_RESOLVERS: Partial<Record<Stripe.Event['type'], StatusResolver>> = 
 	'checkout.session.expired': () => 'EXPIRED'
 };
 
-const toPaymentIntentId = (session: Stripe.Checkout.Session): string | null => {
-	const intent = session.payment_intent;
-	return typeof intent === 'string' ? intent : (intent?.id ?? null);
-};
+export interface StripeSessionEvent {
+	status: OutcomeStatus;
+	session: Stripe.Checkout.Session;
+}
 
-/** Stripe-Event → normalisiertes PaymentOutcome; `null` für irrelevante Events. */
-export const mapStripeEvent = (event: Stripe.Event): PaymentOutcome | null => {
+/** Relevante Checkout-Session-Events; `null` für alle anderen. */
+export const mapStripeEvent = (event: Stripe.Event): StripeSessionEvent | null => {
 	const resolve = STATUS_RESOLVERS[event.type];
 	if (!resolve) {
 		return null;
 	}
 	const session = event.data.object as Stripe.Checkout.Session;
-	return {
-		providerReference: session.id,
-		status: resolve(session),
-		providerPaymentId: toPaymentIntentId(session)
-	};
+	return { status: resolve(session), session };
 };

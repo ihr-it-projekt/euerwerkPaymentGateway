@@ -1,5 +1,4 @@
 node_modules/
 coverage/
 reports/
-drizzle/
 package-lock.json

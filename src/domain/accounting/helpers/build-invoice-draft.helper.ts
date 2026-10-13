@@ -1,18 +1,16 @@
-import type { Checkout } from '../../checkout/models/checkout.schema.ts';
+import type { PaymentRecord } from '../../checkout/models/checkout.schema.ts';
 import type { AccountingInvoiceDraft } from '../models/accounting.port.ts';
-import { toNetUnitPrice } from './to-net-unit-price.helper.ts';
 
-export const buildInvoiceDraft = (
-	checkout: Checkout,
-	contactId: string
-): AccountingInvoiceDraft => ({
-	contactId,
-	headerText: `Bestellung ${checkout.reference}`,
-	items: checkout.items.map((item) => ({
+/** Bruttopositionen 1:1 – EÜRwerk rechnet die Steuer heraus (`priceMode: 'GROSS'`). */
+export const buildInvoiceDraft = (payment: PaymentRecord): AccountingInvoiceDraft => ({
+	contactId: payment.contactId,
+	externalReference: payment.checkoutId,
+	headerText: `Bestellung ${payment.reference}`,
+	items: payment.items.map((item) => ({
 		name: item.name,
 		...(item.description ? { description: item.description } : {}),
 		quantity: item.quantity,
-		unitPriceNet: toNetUnitPrice(item.unitAmount, item.taxRate),
+		unitPriceGross: item.unitAmount / 100,
 		taxRate: item.taxRate
 	}))
 });

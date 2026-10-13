@@ -1,10 +1,12 @@
 import type {
-	Checkout,
+	CheckoutRequest,
 	CheckoutStatus,
+	CheckoutView,
+	PaymentRecord,
 	ProviderName,
 	WebhookSource
 } from '../../checkout/models/checkout.schema.ts';
-import type { MerchantCredentials } from '../../merchant/models/merchant.schema.ts';
+import type { PaymentConfig } from '../../config/models/payment-config.schema.ts';
 
 export interface ProviderCheckoutSession {
 	providerReference: string;
@@ -16,11 +18,14 @@ export interface WebhookRequest {
 	headers: Record<string, string>;
 }
 
-/** Normalisiertes Ergebnis eines Provider-Webhooks. */
+/**
+ * Normalisiertes Ergebnis eines Provider-Webhooks.
+ * Bei `SUCCEEDED` enthält `payment` alle Daten zum Buchen (vom Provider nachgeladen).
+ */
 export interface PaymentOutcome {
 	providerReference: string;
 	status: Exclude<CheckoutStatus, 'PENDING'>;
-	providerPaymentId: string | null;
+	payment: PaymentRecord | null;
 }
 
 /**
@@ -32,11 +37,13 @@ export interface PaymentProvider {
 	readonly name: ProviderName;
 	readonly webhookSource: WebhookSource;
 	/** Provider-spezifische Vorgaben (z.B. Währung, Mindestbetrag) – wirft `VALIDATION_FAILED`. */
-	assertEligible?: (checkout: Pick<Checkout, 'currency' | 'amountTotal'>) => void;
+	assertEligible?: (checkout: Pick<CheckoutRequest, 'currency' | 'amountTotal'>) => void;
 	createCheckoutSession: (
-		checkout: Checkout,
-		credentials: MerchantCredentials
+		checkout: CheckoutRequest,
+		config: PaymentConfig
 	) => Promise<ProviderCheckoutSession>;
+	/** Live-Status beim Provider; wirft `NOT_FOUND`, wenn die Referenz nicht existiert. */
+	getCheckout: (providerReference: string, config: PaymentConfig) => Promise<CheckoutView>;
 }
 
 /** Verarbeitet eingehende Webhooks eines Kanals (= Acquirer/PSP-Account). */
@@ -49,7 +56,7 @@ export interface WebhookProcessor {
 	 */
 	processWebhook: (
 		request: WebhookRequest,
-		credentials: MerchantCredentials
+		config: PaymentConfig
 	) => Promise<PaymentOutcome | null>;
 }
 

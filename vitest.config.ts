@@ -7,7 +7,7 @@ export default defineConfig({
 		coverage: {
 			provider: 'v8',
 			include: ['src/**/*.ts'],
-			exclude: ['src/**/*.spec.ts', 'src/index.ts', 'src/infrastructure/db/migrate.ts'],
+			exclude: ['src/**/*.spec.ts', 'src/index.ts'],
 			reporter: ['text', 'html', 'lcov'],
 			reportsDirectory: 'reports/coverage',
 			thresholds: { lines: 85, functions: 85, branches: 80, statements: 85 }

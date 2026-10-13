@@ -1,16 +1,17 @@
 import { randomBytes } from 'node:crypto';
 import { faker } from '@faker-js/faker';
 import { describe, expect, it } from 'vitest';
-import { generateSecret } from './generate-secret.helper.ts';
-import { hashApiKey } from './hash-api-key.helper.ts';
+import {
+	formatCheckoutId,
+	parseCheckoutId
+} from '../../domain/checkout/helpers/checkout-id.helper.ts';
 import { createSecretCipher } from './secret-cipher.ts';
-import { signWebhookPayload } from './sign-webhook-payload.helper.ts';
-import { verifyWebhookSignature } from './verify-webhook-signature.helper.ts';
+import { createWebhookKeyCodec } from './webhook-key-codec.ts';
 
 const newKey = (): string => randomBytes(32).toString('base64');
 
 describe('createSecretCipher', () => {
-	it('verschlüsselt und entschlüsselt verlustfrei', () => {
+	it('verschlüsselt verlustfrei mit neuem IV pro Aufruf', () => {
 		const cipher = createSecretCipher(newKey());
 		const secret = faker.string.alphanumeric(64);
 
@@ -18,65 +19,54 @@ describe('createSecretCipher', () => {
 
 		expect(encrypted).toMatch(/^v1\./);
 		expect(encrypted).not.toContain(secret);
+		expect(cipher.encrypt(secret)).not.toBe(encrypted);
 		expect(cipher.decrypt(encrypted)).toBe(secret);
 	});
 
-	it('erzeugt pro Aufruf einen neuen IV', () => {
-		const cipher = createSecretCipher(newKey());
-
-		expect(cipher.encrypt('gleich')).not.toBe(cipher.encrypt('gleich'));
-	});
-
-	it('erkennt Manipulation und falsche Schlüssel', () => {
+	it('lehnt fremde Schlüssel, unbekannte Formate und falsche Schlüssellängen ab', () => {
 		const encrypted = createSecretCipher(newKey()).encrypt('geheim');
 
 		expect(() => createSecretCipher(newKey()).decrypt(encrypted)).toThrow();
-	});
-
-	it('lehnt unbekannte Formate und falsche Schlüssellängen ab', () => {
 		expect(() => createSecretCipher(newKey()).decrypt('v0.a.b.c')).toThrow(/format/i);
 		expect(() => createSecretCipher(randomBytes(16).toString('base64'))).toThrow(/32 Byte/);
 	});
 });
 
-describe('generateSecret / hashApiKey', () => {
-	it('erzeugt eindeutige, präfixierte Secrets', () => {
-		const a = generateSecret('pgw');
+describe('createWebhookKeyCodec', () => {
+	it('verpackt den API-Key URL-sicher und stellt ihn wieder her', () => {
+		const codec = createWebhookKeyCodec(createSecretCipher(newKey()));
+		const apiKey = `ewk_live_${faker.string.hexadecimal({ length: 48, prefix: '' })}`;
 
-		expect(a).toMatch(/^pgw_[\w-]{43}$/);
-		expect(a).not.toBe(generateSecret('pgw'));
+		const token = codec.encode(apiKey);
+
+		expect(token).toMatch(/^[\w.-]+$/);
+		expect(codec.decode(token)).toBe(apiKey);
 	});
 
-	it('hasht deterministisch als SHA-256-Hex', () => {
-		const key = generateSecret('pgw');
+	it('wirft NOT_FOUND bei manipulierten Tokens', () => {
+		const codec = createWebhookKeyCodec(createSecretCipher(newKey()));
+		const token = codec.encode('ewk_live_abc');
 
-		expect(hashApiKey(key)).toMatch(/^[0-9a-f]{64}$/);
-		expect(hashApiKey(key)).toBe(hashApiKey(key));
+		expect(() => codec.decode(`${token.slice(0, -2)}xx`)).toThrow(
+			expect.objectContaining({ code: 'NOT_FOUND' }) as Error
+		);
 	});
 });
 
-describe('Webhook-Signatur', () => {
-	const secret = generateSecret('whsec');
-	const body = JSON.stringify({ id: faker.string.uuid() });
-	const now = 1_760_000_000;
+describe('Checkout-ID', () => {
+	it('ist zustandslos in Provider und Referenz zerlegbar', () => {
+		const id = formatCheckoutId('wero', 'cs_test_a1');
 
-	it('verifiziert selbst signierte Payloads', () => {
-		const header = signWebhookPayload(secret, body, now);
-
-		expect(header).toMatch(/^t=1760000000,v1=[0-9a-f]{64}$/);
-		expect(verifyWebhookSignature({ secret, body, header, nowSeconds: now + 10 })).toBe(true);
+		expect(id).toBe('wero.cs_test_a1');
+		expect(parseCheckoutId(id)).toEqual({ provider: 'wero', providerReference: 'cs_test_a1' });
 	});
 
-	it.each([
-		['falsches Secret', { secret: 'anders' }],
-		['veränderter Body', { body: '{}' }],
-		['zu alter Timestamp', { nowSeconds: now + 301 }],
-		['kaputter Header', { header: 'unsinn' }]
-	])('lehnt ab: %s', (_label, override) => {
-		const header = signWebhookPayload(secret, body, now);
-
-		expect(verifyWebhookSignature({ secret, body, header, nowSeconds: now, ...override })).toBe(
-			false
-		);
-	});
+	it.each(['cs_test_1', 'klarna.abc', 'stripe.', 'stripe.a/b', 'paypal.a.b'])(
+		'lehnt %s ab',
+		(id) => {
+			expect(() => parseCheckoutId(id)).toThrow(
+				expect.objectContaining({ code: 'NOT_FOUND' }) as Error
+			);
+		}
+	);
 });

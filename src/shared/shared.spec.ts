@@ -53,9 +53,7 @@ describe('createJsonLogger', () => {
 describe('loadEnv', () => {
 	const valid = {
 		PUBLIC_BASE_URL: 'http://localhost:3100',
-		DATABASE_URL: 'postgres://localhost/db',
 		ENCRYPTION_KEY: Buffer.alloc(32, 1).toString('base64'),
-		ADMIN_API_KEY: 'a'.repeat(32),
 		EUERWERK_API_BASE: 'http://localhost:5173/api/v1'
 	};
 

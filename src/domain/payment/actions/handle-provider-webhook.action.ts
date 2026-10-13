@@ -1,27 +1,35 @@
-import { DomainError } from '../../../shared/errors/domain-error.ts';
+import type { Logger } from '../../../shared/logger/logger.ts';
+import type { BookPaymentAction } from '../../accounting/actions/book-payment.action.ts';
 import type { WebhookSource } from '../../checkout/models/checkout.schema.ts';
-import type { MerchantRepository } from '../../merchant/models/merchant.repository.ts';
-import { providersForSource } from '../helpers/providers-for-source.helper.ts';
-import type {
-	PaymentProviderRegistry,
-	WebhookProcessorRegistry,
-	WebhookRequest
-} from '../models/payment-provider.port.ts';
-import type { ApplyPaymentOutcomeAction, ApplyResult } from './apply-payment-outcome.action.ts';
+import type { PaymentConfigSource } from '../../config/models/payment-config.port.ts';
+import { assertProviderConfigured } from '../../checkout/helpers/assert-provider-configured.helper.ts';
+import type { WebhookKeyCodec } from '../../webhook/models/webhook-key-codec.port.ts';
+import type { WebhookProcessorRegistry, WebhookRequest } from '../models/payment-provider.port.ts';
 
 interface Dependencies {
-	merchants: MerchantRepository;
-	providers: PaymentProviderRegistry;
+	keyCodec: WebhookKeyCodec;
+	configSource: PaymentConfigSource;
 	webhookProcessors: WebhookProcessorRegistry;
-	applyOutcome: Pick<ApplyPaymentOutcomeAction, 'execute'>;
+	bookPayment: Pick<BookPaymentAction, 'execute'>;
+	logger: Logger;
 }
 
 export interface ProviderWebhookInput {
 	source: WebhookSource;
-	merchantId: string;
+	/** Verschlüsselter EÜRwerk-API-Key aus der Webhook-URL. */
+	keyToken: string;
 	request: WebhookRequest;
 }
 
+export type WebhookResult =
+	| { result: 'IGNORED_EVENT' }
+	| { result: 'NO_ACTION'; status: string }
+	| { result: 'BOOKED'; invoiceId: string; alreadyBooked: boolean };
+
+/**
+ * Provider-Webhook → (bei Zahlungserfolg) Buchung in EÜRwerk.
+ * Der Mandant ergibt sich allein aus dem verschlüsselten Key in der URL – keine Datenhaltung.
+ */
 export class HandleProviderWebhookAction {
 	readonly #deps: Dependencies;
 
@@ -29,17 +37,20 @@ export class HandleProviderWebhookAction {
 		this.#deps = deps;
 	}
 
-	async execute(input: ProviderWebhookInput): Promise<ApplyResult | 'IGNORED_EVENT'> {
-		const merchant = await this.#deps.merchants.findById(input.merchantId);
-		if (!merchant?.credentials[input.source]) {
-			throw new DomainError('NOT_FOUND', 'Merchant/Webhook-Kanal nicht gefunden');
-		}
+	async execute(input: ProviderWebhookInput): Promise<WebhookResult> {
+		const apiKey = this.#deps.keyCodec.decode(input.keyToken);
+		const config = await this.#deps.configSource.load(apiKey);
+		assertProviderConfigured(config, input.source);
 		const processor = this.#deps.webhookProcessors[input.source];
-		const outcome = await processor.processWebhook(input.request, merchant.credentials);
+		const outcome = await processor.processWebhook(input.request, config);
 		if (!outcome) {
-			return 'IGNORED_EVENT';
+			return { result: 'IGNORED_EVENT' };
 		}
-		const providers = providersForSource(this.#deps.providers, input.source);
-		return this.#deps.applyOutcome.execute(merchant, providers, outcome);
+		if (!outcome.payment) {
+			this.#deps.logger.info('Zahlungsstatus ohne Buchung', { ...outcome });
+			return { result: 'NO_ACTION', status: outcome.status };
+		}
+		const booking = await this.#deps.bookPayment.execute(apiKey, outcome.payment);
+		return { result: 'BOOKED', ...booking };
 	}
 }

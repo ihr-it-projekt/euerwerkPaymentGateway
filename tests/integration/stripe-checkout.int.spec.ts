@@ -1,178 +1,166 @@
 import { faker } from '@faker-js/faker';
-import { eq } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { checkouts } from '#src/infrastructure/db/schema.ts';
-import { verifyWebhookSignature } from '#src/shared/crypto/verify-webhook-signature.helper.ts';
-import type { ShopEvent } from '#src/domain/notification/models/shop-notifier.port.ts';
-import { stripeErrorHandler } from '../mock-server/handlers/stripe.handlers.ts';
+import { beforeEach, describe, expect, it } from 'vitest';
+import {
+	euerwerkFailingInvoiceHandler,
+	euerwerkMock
+} from '../mock-server/handlers/euerwerk.handlers.ts';
+import { stripeErrorHandler, stripeMock } from '../mock-server/handlers/stripe.handlers.ts';
 import { requestLog } from '../mock-server/request-log.ts';
 import { mockServer } from '../mock-server/server.ts';
-import { createCheckout, getCheckout, postCheckout } from './support/checkout-api.ts';
+import { createCheckout, getCheckout, postCheckout, providerRef } from './support/checkout-api.ts';
 import { sendStripeEvent } from './support/provider-webhooks.ts';
 import {
-	createMerchantViaApi,
-	createTestContext,
-	type CreatedTestMerchant,
-	type TestContext
+	createTenant,
+	createTestApp,
+	getWebhookUrls,
+	type TestTenant
 } from './support/test-app.ts';
 
-describe('Stripe Checkout – Ende-zu-Ende', () => {
-	let ctx: TestContext;
-	let merchant: CreatedTestMerchant;
+describe('Stripe – zustandsloser Ablauf', () => {
+	const app = createTestApp();
+	let tenant: TestTenant;
+	let webhookUrl: string;
 
-	beforeAll(async () => {
-		ctx = await createTestContext();
-		merchant = await createMerchantViaApi(ctx.app);
+	const paySession = async (sessionId: string, patch: Record<string, unknown> = {}) =>
+		sendStripeEvent(app, tenant, {
+			webhookUrl,
+			type: 'checkout.session.completed',
+			session: stripeMock.updateSession(sessionId, {
+				status: 'complete',
+				payment_status: 'paid',
+				payment_intent: `pi_${faker.string.alphanumeric(24)}`,
+				...patch
+			})
+		});
+
+	beforeEach(async () => {
+		tenant = createTenant();
+		webhookUrl = (await getWebhookUrls(app, tenant.apiKey)).stripe!;
 	});
 
-	afterAll(async () => {
-		await ctx.close();
-	});
-
-	it('legt eine Stripe Checkout Session an und liefert die Redirect-URL', async () => {
-		const checkout = await createCheckout(ctx.app, merchant.apiKey, {
+	it('legt Kontakt in EÜRwerk an und speichert alle Checkout-Daten bei Stripe', async () => {
+		const checkout = await createCheckout(app, tenant.apiKey, {
 			provider: 'stripe',
+			reference: 'ORDER-42',
 			items: [{ name: 'Lizenz', quantity: 2, unitAmount: 1190, taxRate: 19 }]
 		});
 
-		expect(checkout).toMatchObject({
-			status: 'PENDING',
-			amountTotal: 2380,
-			accountingStatus: 'PENDING'
-		});
-		expect(checkout.redirectUrl).toMatch(/^https:\/\/checkout\.stripe\.com\//);
+		expect(checkout).toMatchObject({ provider: 'stripe', status: 'PENDING', amountTotal: 2380 });
+		expect(checkout.id).toMatch(/^stripe\.cs_test_/);
+		const [contactCall] = requestLog.find('POST', /\/contacts$/);
+		expect(contactCall?.body).toMatchObject({ externalSource: 'payment-gateway' });
 		const [stripeCall] = requestLog.find('POST', /\/v1\/checkout\/sessions$/);
 		expect(stripeCall?.headers.get('authorization')).toBe(
-			`Bearer ${merchant.input.stripe!.secretKey}`
+			`Bearer ${tenant.config.stripe!.secretKey}`
 		);
 		expect(stripeCall?.body).toMatchObject({
-			mode: 'payment',
-			client_reference_id: checkout.id,
-			'line_items[0][quantity]': '2',
-			'line_items[0][price_data][unit_amount]': '1190',
-			'line_items[0][price_data][currency]': 'eur'
+			client_reference_id: 'ORDER-42',
+			'metadata[pgw_provider]': 'stripe',
+			'metadata[pgw_reference]': 'ORDER-42',
+			'line_items[0][price_data][product_data][metadata][pgw_tax_rate]': '19'
 		});
 	});
 
-	it('verbucht nach checkout.session.completed in EÜRwerk und benachrichtigt den Shop signiert', async () => {
-		const checkout = await createCheckout(ctx.app, merchant.apiKey, { provider: 'stripe' });
-		requestLog.clear();
-		const paymentIntent = `pi_${faker.string.alphanumeric(24)}`;
+	it('liefert den Live-Status von Stripe', async () => {
+		const checkout = await createCheckout(app, tenant.apiKey);
+		expect((await getCheckout(app, tenant.apiKey, checkout.id)).status).toBe('PENDING');
 
-		const response = await sendStripeEvent(ctx.app, merchant, {
-			type: 'checkout.session.completed',
-			session: {
-				id: checkout.providerReference,
-				payment_status: 'paid',
-				payment_intent: paymentIntent
-			}
+		stripeMock.updateSession(providerRef(checkout), { status: 'complete', payment_status: 'paid' });
+
+		expect((await getCheckout(app, tenant.apiKey, checkout.id)).status).toBe('SUCCEEDED');
+	});
+
+	it('bucht nach checkout.session.completed brutto und idempotent in EÜRwerk', async () => {
+		const checkout = await createCheckout(app, tenant.apiKey, {
+			reference: 'ORDER-7',
+			items: [{ name: 'Lizenz', quantity: 1, unitAmount: 999, taxRate: 19 }]
 		});
 
-		expect(response.status).toBe(200);
-		const updated = await getCheckout(ctx.app, merchant.apiKey, checkout.id);
-		expect(updated).toMatchObject({
-			status: 'SUCCEEDED',
-			providerPaymentId: paymentIntent,
-			accountingStatus: 'BOOKED'
+		const response = await paySession(providerRef(checkout));
+
+		expect(await response.json()).toMatchObject({ result: 'BOOKED', alreadyBooked: false });
+		const [invoice] = euerwerkMock.invoices(tenant.apiKey);
+		expect(invoice).toMatchObject({
+			status: 'PAID',
+			externalReference: checkout.id,
+			grossAmount: 9.99
 		});
-		const euerwerkPaths = requestLog
-			.all()
-			.filter((entry) => entry.url.host === 'euerwerk.test')
-			.map((entry) => entry.url.pathname.replace(/[0-9a-f-]{36}/, ':id'));
-		expect(euerwerkPaths).toEqual([
-			'/api/v1/contacts',
-			'/api/v1/invoices',
-			'/api/v1/invoices/:id/enshrine',
-			'/api/v1/invoices/:id/book-amount'
-		]);
+		expect(invoice?.body).toMatchObject({
+			priceMode: 'GROSS',
+			headerText: 'Bestellung ORDER-7',
+			items: [{ name: 'Lizenz', quantity: 1, unitPrice: 9.99, taxRate: 19 }]
+		});
 		const [booking] = requestLog.find('POST', /book-amount$/);
-		expect(booking?.body).toMatchObject({
-			amount: checkout.amountTotal / 100,
-			paymentMethod: 'CREDIT_CARD'
-		});
-
-		const [shopCall] = requestLog.find('POST', /payment-gateway\/webhook$/);
-		const event = shopCall?.body as ShopEvent;
-		expect(event).toMatchObject({ type: 'checkout.succeeded', data: { id: checkout.id } });
-		expect(
-			verifyWebhookSignature({
-				secret: merchant.webhookSigningSecret,
-				body: JSON.stringify(event),
-				header: shopCall?.headers.get('x-gateway-signature') ?? '',
-				nowSeconds: Math.floor(Date.now() / 1000)
-			})
-		).toBe(true);
+		expect(booking?.body).toMatchObject({ amount: 9.99, paymentMethod: 'STRIPE' });
 	});
 
-	it('ist idempotent bei doppelt zugestellten Webhooks', async () => {
-		const checkout = await createCheckout(ctx.app, merchant.apiKey, { provider: 'stripe' });
-		const event = {
-			type: 'checkout.session.completed',
-			session: { id: checkout.providerReference, payment_status: 'paid' }
-		};
-
-		await sendStripeEvent(ctx.app, merchant, event);
+	it('verarbeitet doppelte Webhooks ohne Doppelbuchung', async () => {
+		const checkout = await createCheckout(app, tenant.apiKey);
+		await paySession(providerRef(checkout));
 		requestLog.clear();
-		const second = await sendStripeEvent(ctx.app, merchant, event);
 
-		expect(await second.json()).toMatchObject({ result: 'IGNORED_DUPLICATE' });
-		expect(requestLog.all()).toHaveLength(0);
+		const second = await paySession(providerRef(checkout));
+
+		expect(await second.json()).toMatchObject({ result: 'BOOKED', alreadyBooked: true });
+		expect(euerwerkMock.invoices(tenant.apiKey)).toHaveLength(1);
+		expect(requestLog.find('POST', /book-amount$/)).toHaveLength(0);
 	});
 
-	it('setzt asynchrone Zahlungen erst auf PROCESSING, dann auf FAILED', async () => {
-		const checkout = await createCheckout(ctx.app, merchant.apiKey, { provider: 'stripe' });
-		const session = { id: checkout.providerReference, payment_status: 'unpaid' };
+	it('antwortet 502 bei EÜRwerk-Fehlern – der Stripe-Retry bucht später korrekt', async () => {
+		const checkout = await createCheckout(app, tenant.apiKey);
+		mockServer.use(euerwerkFailingInvoiceHandler());
 
-		await sendStripeEvent(ctx.app, merchant, { type: 'checkout.session.completed', session });
-		expect((await getCheckout(ctx.app, merchant.apiKey, checkout.id)).status).toBe('PROCESSING');
+		const failed = await paySession(providerRef(checkout));
+		mockServer.resetHandlers();
+		const retried = await paySession(providerRef(checkout));
 
-		await sendStripeEvent(ctx.app, merchant, {
-			type: 'checkout.session.async_payment_failed',
-			session
+		expect(failed.status).toBe(502);
+		expect(await retried.json()).toMatchObject({ result: 'BOOKED' });
+		expect(euerwerkMock.invoices(tenant.apiKey)).toHaveLength(1);
+	});
+
+	it('bucht asynchrone Zahlungen erst nach async_payment_succeeded', async () => {
+		const checkout = await createCheckout(app, tenant.apiKey);
+		const ref = providerRef(checkout);
+
+		const pending = await paySession(ref, { payment_status: 'unpaid' });
+		const succeeded = await sendStripeEvent(app, tenant, {
+			webhookUrl,
+			type: 'checkout.session.async_payment_succeeded',
+			session: stripeMock.updateSession(ref, { payment_status: 'paid' })
 		});
-		const failed = await getCheckout(ctx.app, merchant.apiKey, checkout.id);
-		expect(failed).toMatchObject({ status: 'FAILED', accountingStatus: 'PENDING' });
-		expect(requestLog.find('POST', /\/invoices$/)).toHaveLength(0);
+
+		expect(await pending.json()).toMatchObject({ result: 'NO_ACTION', status: 'PROCESSING' });
+		expect(await succeeded.json()).toMatchObject({ result: 'BOOKED' });
 	});
 
-	it('lehnt Webhooks mit falscher Signatur ab', async () => {
-		const checkout = await createCheckout(ctx.app, merchant.apiKey, { provider: 'stripe' });
+	it('lehnt falsche Signaturen ab und ignoriert fremde Sessions', async () => {
+		const checkout = await createCheckout(app, tenant.apiKey);
+		const session = stripeMock.updateSession(providerRef(checkout), { payment_status: 'paid' });
 
-		const response = await sendStripeEvent(ctx.app, merchant, {
+		const forged = await sendStripeEvent(app, tenant, {
+			webhookUrl,
 			type: 'checkout.session.completed',
-			session: { id: checkout.providerReference, payment_status: 'paid' },
+			session,
 			signatureSecret: 'whsec_falsch'
 		});
-
-		expect(response.status).toBe(400);
-		expect(await response.json()).toMatchObject({ error: { code: 'INVALID_WEBHOOK_SIGNATURE' } });
-		expect((await getCheckout(ctx.app, merchant.apiKey, checkout.id)).status).toBe('PENDING');
-	});
-
-	it('ignoriert irrelevante Event-Typen', async () => {
-		const response = await sendStripeEvent(ctx.app, merchant, {
-			type: 'customer.created',
-			session: { id: 'cus_123' }
+		const foreign = await sendStripeEvent(app, tenant, {
+			webhookUrl,
+			type: 'checkout.session.completed',
+			session: { id: 'cs_fremd', payment_status: 'paid', metadata: {} }
 		});
 
-		expect(await response.json()).toMatchObject({ result: 'IGNORED_EVENT' });
+		expect(forged.status).toBe(400);
+		expect(await foreign.json()).toMatchObject({ result: 'IGNORED_EVENT' });
+		expect(euerwerkMock.invoices(tenant.apiKey)).toHaveLength(0);
 	});
 
-	it('meldet 502 und markiert den Checkout als FAILED, wenn Stripe nicht erreichbar ist', async () => {
+	it('meldet 502, wenn Stripe die Session ablehnt', async () => {
 		mockServer.use(stripeErrorHandler(400));
-		const reference = faker.string.alphanumeric(16);
 
-		const response = await postCheckout(ctx.app, merchant.apiKey, {
-			provider: 'stripe',
-			reference
-		});
+		const response = await postCheckout(app, tenant.apiKey);
 
 		expect(response.status).toBe(502);
 		expect(await response.json()).toMatchObject({ error: { code: 'UPSTREAM_ERROR' } });
-		const [stored] = await ctx.db
-			.select()
-			.from(checkouts)
-			.where(eq(checkouts.reference, reference));
-		expect(stored?.status).toBe('FAILED');
 	});
 });

@@ -2,48 +2,50 @@ import { z } from 'zod';
 import type { AccountingGateway } from '../../domain/accounting/models/accounting.port.ts';
 import { fetchJson } from '../../shared/http/fetch-json.helper.ts';
 import { buildContactPayload } from './build-contact-payload.helper.ts';
+import { euerwerkRequest } from './euerwerk-request.helper.ts';
 
-const CreatedContactSchema = z.object({ id: z.string() });
-const CreatedInvoiceSchema = z.object({ id: z.string(), grossAmount: z.coerce.number() });
+const ContactSchema = z.object({ id: z.uuid() });
+const InvoiceSchema = z.object({
+	id: z.uuid(),
+	status: z.enum(['DRAFT', 'OPEN', 'PAID', 'PARTIALLY_PAID', 'CANCELLED'])
+});
 
-const bearer = (token: string): Record<string, string> => ({ Authorization: `Bearer ${token}` });
-
-/** Adapter auf die EÜRwerk REST-API (`/api/v1`). */
+/**
+ * Buchhaltungs-Adapter auf die EÜRwerk REST-API (`/api/v1`).
+ * Kontakt und Rechnung sind dort über externe Referenzen idempotent (200 = existiert bereits).
+ */
 export const createEuerwerkAccountingGateway = (baseUrl: string): AccountingGateway => ({
-	createContact: async (apiToken, customer) => {
-		const response = await fetchJson(`${baseUrl}/contacts`, {
-			method: 'POST',
-			headers: bearer(apiToken),
-			body: buildContactPayload(customer)
-		});
-		return CreatedContactSchema.parse(response).id;
+	upsertContact: async (apiKey, customer) => {
+		const response = await fetchJson(
+			`${baseUrl}/contacts`,
+			euerwerkRequest(apiKey, 'POST', buildContactPayload(customer))
+		);
+		return ContactSchema.parse(response).id;
 	},
-	createInvoice: async (apiToken, draft) => {
-		const response = await fetchJson(`${baseUrl}/invoices`, {
-			method: 'POST',
-			headers: bearer(apiToken),
-			body: {
-				contactId: draft.contactId,
-				headerText: draft.headerText,
-				items: draft.items.map(({ unitPriceNet, ...item }) => ({
-					...item,
-					unitPrice: unitPriceNet
-				}))
-			}
-		});
-		return CreatedInvoiceSchema.parse(response);
+	createInvoice: async (apiKey, draft) => {
+		const body = {
+			contactId: draft.contactId,
+			externalReference: draft.externalReference,
+			headerText: draft.headerText,
+			priceMode: 'GROSS',
+			items: draft.items.map(({ unitPriceGross, ...item }) => ({
+				...item,
+				unitPrice: unitPriceGross
+			}))
+		};
+		const response = await fetchJson(`${baseUrl}/invoices`, euerwerkRequest(apiKey, 'POST', body));
+		return InvoiceSchema.parse(response);
 	},
-	finalizeInvoice: async (apiToken, invoiceId) => {
-		await fetchJson(`${baseUrl}/invoices/${invoiceId}/enshrine`, {
-			method: 'POST',
-			headers: bearer(apiToken)
-		});
+	finalizeInvoice: async (apiKey, invoiceId) => {
+		await fetchJson(`${baseUrl}/invoices/${invoiceId}/enshrine`, euerwerkRequest(apiKey, 'POST'));
 	},
-	bookPayment: async (apiToken, invoiceId, payment) => {
-		await fetchJson(`${baseUrl}/invoices/${invoiceId}/book-amount`, {
-			method: 'POST',
-			headers: bearer(apiToken),
-			body: { ...payment, paymentDate: payment.paymentDate.toISOString() }
-		});
+	bookPayment: async (apiKey, invoiceId, payment) => {
+		await fetchJson(
+			`${baseUrl}/invoices/${invoiceId}/book-amount`,
+			euerwerkRequest(apiKey, 'POST', {
+				...payment,
+				paymentDate: payment.paymentDate.toISOString()
+			})
+		);
 	}
 });

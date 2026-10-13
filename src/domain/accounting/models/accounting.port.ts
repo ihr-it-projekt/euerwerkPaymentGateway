@@ -1,20 +1,29 @@
-import type { Customer } from '../../checkout/models/checkout.schema.ts';
+import type { Customer, TaxRate } from '../../checkout/models/checkout.schema.ts';
 
-export type AccountingPaymentMethod = 'CREDIT_CARD' | 'PAYPAL' | 'BANK_TRANSFER';
+export type AccountingPaymentMethod = 'STRIPE' | 'PAYPAL' | 'WERO';
 
 export interface AccountingInvoiceItem {
 	name: string;
 	description?: string;
 	quantity: number;
-	/** Netto-Einzelpreis in EUR (Dezimal) – EÜRwerk rechnet die Steuer selbst. */
-	unitPriceNet: number;
-	taxRate: 0 | 7 | 19;
+	/** Brutto-Einzelpreis in EUR (Dezimal) – Rechnung mit `priceMode: 'GROSS'`. */
+	unitPriceGross: number;
+	taxRate: TaxRate;
 }
 
 export interface AccountingInvoiceDraft {
 	contactId: string;
-	items: AccountingInvoiceItem[];
+	/** Idempotenz-Schlüssel in EÜRwerk (eindeutig pro Mandant) = Checkout-ID des Gateways. */
+	externalReference: string;
 	headerText: string;
+	items: AccountingInvoiceItem[];
+}
+
+export type AccountingInvoiceStatus = 'DRAFT' | 'OPEN' | 'PAID' | 'PARTIALLY_PAID' | 'CANCELLED';
+
+export interface AccountingInvoice {
+	id: string;
+	status: AccountingInvoiceStatus;
 }
 
 export interface AccountingPayment {
@@ -24,22 +33,13 @@ export interface AccountingPayment {
 	comment: string;
 }
 
-export interface AccountingInvoice {
-	id: string;
-	/** Von EÜRwerk berechneter Bruttobetrag in EUR. */
-	grossAmount: number;
-}
-
-/** Port zur Buchhaltung (EÜRwerk). Alle Methoden arbeiten mit dem Token des Merchants. */
+/**
+ * Port zur Buchhaltung (EÜRwerk). Alle Aufrufe mit dem API-Key des Mandanten.
+ * `upsertContact` und `createInvoice` sind in EÜRwerk idempotent (externe Referenzen).
+ */
 export interface AccountingGateway {
-	createContact: (apiToken: string, customer: Customer) => Promise<string>;
-	createInvoice: (apiToken: string, draft: AccountingInvoiceDraft) => Promise<AccountingInvoice>;
-	finalizeInvoice: (apiToken: string, invoiceId: string) => Promise<void>;
-	bookPayment: (apiToken: string, invoiceId: string, payment: AccountingPayment) => Promise<void>;
-}
-
-/** Zuordnung Shop-Kunde → EÜRwerk-Kontakt (pro Merchant). */
-export interface AccountingContactRepository {
-	find: (merchantId: string, customerId: string) => Promise<string | null>;
-	save: (merchantId: string, customerId: string, contactId: string) => Promise<void>;
+	upsertContact: (apiKey: string, customer: Customer) => Promise<string>;
+	createInvoice: (apiKey: string, draft: AccountingInvoiceDraft) => Promise<AccountingInvoice>;
+	finalizeInvoice: (apiKey: string, invoiceId: string) => Promise<void>;
+	bookPayment: (apiKey: string, invoiceId: string, payment: AccountingPayment) => Promise<void>;
 }

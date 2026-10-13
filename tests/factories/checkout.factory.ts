@@ -1,6 +1,6 @@
 import { faker } from '@faker-js/faker';
 import type {
-	Checkout,
+	CheckoutRequest,
 	CreateCheckoutInput,
 	Customer,
 	LineItem
@@ -42,29 +42,12 @@ export const buildCreateCheckoutInput = (
 	...overrides
 });
 
-export const buildCheckout = (overrides: Partial<Checkout> = {}): Checkout => {
-	const items = overrides.items ?? [buildLineItem()];
-	const now = faker.date.recent();
+export const buildCheckoutRequest = (overrides: Partial<CheckoutRequest> = {}): CheckoutRequest => {
+	const input = buildCreateCheckoutInput(overrides);
 	return {
-		id: faker.string.uuid(),
-		merchantId: faker.string.uuid(),
-		reference: faker.string.alphanumeric(12),
-		provider: 'stripe',
-		status: 'PENDING',
-		currency: 'EUR',
-		amountTotal: items.reduce((sum, item) => sum + item.unitAmount * item.quantity, 0),
-		customer: buildCustomer(),
-		items,
-		successUrl: faker.internet.url(),
-		cancelUrl: faker.internet.url(),
-		metadata: {},
-		providerReference: `cs_test_${faker.string.alphanumeric(24)}`,
-		providerPaymentId: null,
-		redirectUrl: faker.internet.url(),
-		accountingStatus: 'PENDING',
-		accountingInvoiceId: null,
-		createdAt: now,
-		updatedAt: now,
+		...input,
+		amountTotal: input.items.reduce((sum, item) => sum + item.unitAmount * item.quantity, 0),
+		contactId: faker.string.uuid(),
 		...overrides
 	};
 };

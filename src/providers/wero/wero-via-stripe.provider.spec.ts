@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { buildCheckout } from '#tests/factories/checkout.factory.ts';
-import { buildCredentials } from '#tests/factories/merchant.factory.ts';
+import { buildCheckoutRequest } from '#tests/factories/checkout.factory.ts';
+import { buildPaymentConfig } from '#tests/factories/config.factory.ts';
 import { requestLog } from '#tests/mock-server/request-log.ts';
-import { MerchantCredentialsSchema } from '../../domain/merchant/models/merchant.schema.ts';
+import { PaymentConfigSchema } from '../../domain/config/models/payment-config.schema.ts';
 import { createStripeClient } from '../stripe/stripe-client.ts';
 import { assertWeroEligible } from './assert-wero-eligible.helper.ts';
 import { createWeroViaStripeProvider } from './wero-via-stripe.provider.ts';
@@ -27,47 +27,37 @@ describe('assertWeroEligible', () => {
 });
 
 describe('WeroViaStripeProvider', () => {
-	it('meldet Status über den Stripe-Webhook-Kanal', () => {
+	it('meldet Status über den Stripe-Kanal und prüft Wero-Vorgaben', () => {
 		expect(provider).toMatchObject({ name: 'wero', webhookSource: 'stripe' });
+		expect(provider.assertEligible).toBe(assertWeroEligible);
 	});
 
 	it('erstellt eine Stripe Checkout Session, eingeschränkt auf Wero', async () => {
-		const checkout = buildCheckout({ provider: 'wero' });
-		const credentials = buildCredentials();
+		const config = buildPaymentConfig();
 
-		const session = await provider.createCheckoutSession(checkout, credentials);
+		await provider.createCheckoutSession(buildCheckoutRequest(), config);
 
-		expect(session.redirectUrl).toContain(session.providerReference);
 		const [call] = requestLog.find('POST', /\/v1\/checkout\/sessions$/);
-		expect(call?.headers.get('authorization')).toBe(`Bearer ${credentials.stripe!.secretKey}`);
-		expect(call?.headers.get('idempotency-key')).toBe(`checkout-${checkout.id}`);
+		expect(call?.headers.get('authorization')).toBe(`Bearer ${config.stripe!.secretKey}`);
 		expect(call?.body).toMatchObject({
-			mode: 'payment',
 			'allowed_payment_method_types[0]': 'wero',
-			'line_items[0][price_data][currency]': 'eur'
+			'metadata[pgw_provider]': 'wero'
 		});
-	});
-
-	it('wirft PROVIDER_NOT_CONFIGURED ohne Stripe-Credentials', async () => {
-		await expect(
-			provider.createCheckoutSession(buildCheckout(), buildCredentials({ stripe: undefined }))
-		).rejects.toMatchObject({ code: 'PROVIDER_NOT_CONFIGURED' });
 	});
 });
 
-describe('Wero-Merchant-Konfiguration', () => {
+describe('PaymentConfigSchema (Wero)', () => {
 	it('verlangt Credentials des Acquirers', () => {
-		const withoutStripe = buildCredentials({ stripe: undefined });
-
-		const result = MerchantCredentialsSchema.safeParse(withoutStripe);
+		const result = PaymentConfigSchema.safeParse(buildPaymentConfig({ stripe: null }));
 
 		expect(result.success).toBe(false);
 		expect(result.error?.issues[0]?.path).toEqual(['wero']);
 	});
 
-	it('setzt Stripe als Default-Acquirer', () => {
-		const parsed = MerchantCredentialsSchema.parse({ ...buildCredentials(), wero: {} });
+	it('setzt Stripe als Default-Acquirer und akzeptiert fehlende Provider', () => {
+		const parsed = PaymentConfigSchema.parse({ stripe: buildPaymentConfig().stripe, wero: {} });
 
-		expect(parsed.wero).toEqual({ acquirer: 'stripe' });
+		expect(parsed).toMatchObject({ wero: { acquirer: 'stripe' } });
+		expect(parsed.paypal).toBeUndefined();
 	});
 });

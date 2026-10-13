@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll } from 'vitest';
 import { requestLog } from './request-log.ts';
-import { mockServer } from './server.ts';
+import { mockServer, resetMockState } from './server.ts';
 
 // onUnhandledFrame: 'error' → jeder nicht gemockte Netzwerkzugriff lässt den Test fehlschlagen.
 beforeAll(() => {
@@ -9,6 +9,7 @@ beforeAll(() => {
 
 afterEach(() => {
 	mockServer.resetHandlers();
+	resetMockState();
 	requestLog.clear();
 });
 

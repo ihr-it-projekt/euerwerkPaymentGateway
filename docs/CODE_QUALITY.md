@@ -32,18 +32,22 @@ mergebar, wenn `npm run check` grün ist.
 ```
 src/
   domain/<bereich>/
-    models/    Zod-Schemas, Typen, Ports (Interfaces für Repositories/externe Systeme)
+    models/    Zod-Schemas, Typen, Ports (Interfaces für externe Systeme)
     helpers/   reine Funktionen – genau eine exportierte Funktion pro Datei
     actions/   Use-Cases – eine Klasse mit genau einer öffentlichen Methode execute()
-  providers/   Adapter nach außen (Stripe, PayPal, EÜRwerk, Shop) – implementieren Ports
-  infrastructure/db/  Drizzle-Schema, Repositories (implementieren Repository-Ports)
+  providers/   Adapter nach außen (EÜRwerk, Stripe, PayPal, Wero) – implementieren Ports
   http/        Hono-Routen, Middleware, Error-Mapping – keine Fachlogik
   shared/      fachfreie Bausteine (Crypto, Logger, fetch-Wrapper, Fehler)
   composition-root.ts  einziger Ort, an dem verdrahtet wird
 ```
 
-Abhängigkeitsrichtung: `http → domain ← providers/infrastructure`. Die Domain importiert **nie**
-aus `http`, `providers`, `infrastructure`, Hono, Drizzle, Stripe-SDK o.ä.
+Abhängigkeitsrichtung: `http → domain ← providers`. Die Domain importiert **nie** aus `http`,
+`providers`, Hono, Stripe-SDK o.ä.
+
+**Zustandslos:** Das Gateway hat keine Datenbank und keinen Cache. Mandanten-Konfiguration kommt
+pro Request aus EÜRwerk (API-Key des Shops), Checkout-Daten liegen beim Zahlungsanbieter
+(Metadaten), Idempotenz stellt EÜRwerk über externe Referenzen sicher. Neue Features dürfen
+keinen Zustand im Gateway einführen – Daten gehören zum Provider oder nach EÜRwerk.
 
 - **Dependency Injection über den Konstruktor** (`deps`-Objekt); keine Singletons, keine globalen
   Imports von Clients in Actions.
@@ -75,29 +79,33 @@ aus `http`, `providers`, `infrastructure`, Hono, Drizzle, Stripe-SDK o.ä.
 
 ## 5. Sicherheit
 
-- Provider-Credentials und Webhook-Secrets werden **AES-256-GCM verschlüsselt** gespeichert.
-- API-Keys werden nur als SHA-256-Hash gespeichert und nur einmal im Klartext ausgegeben.
+- Das Gateway speichert keine Secrets. Provider-Credentials liegen verschlüsselt in EÜRwerk und
+  werden nur für die Dauer eines Requests im Speicher gehalten.
+- Der EÜRwerk-API-Key in Webhook-URLs ist **AES-256-GCM verschlüsselt** (`ENCRYPTION_KEY`).
+- Werte aus Requests, die in Provider-URLs landen (Checkout-ID, Order-ID), werden strikt
+  validiert (Allowlist-Regex).
 - Eingehende Webhooks werden **immer** signaturgeprüft (Stripe: HMAC, PayPal: Verify-API).
-- Ausgehende Webhooks an den Shop werden mit HMAC-SHA256 + Timestamp signiert.
+- PayPal-Orders/Stripe-Sessions ohne Gateway-Kennzeichnung werden nie captured oder gebucht.
 - Vergleiche von Secrets nur mit `timingSafeEqual`.
 - Keine Secrets in Logs (Kontext-Objekte bewusst wählen).
 
 ## 6. Tests
 
-| Art         | Ort                                  | Werkzeug        | Was                             |
-| ----------- | ------------------------------------ | --------------- | ------------------------------- |
-| Unit        | `src/**/*.spec.ts` (neben dem Code)  | Vitest          | Helper, Actions, Adapter        |
-| Integration | `tests/integration/**/*.int.spec.ts` | Vitest + PGlite | Ganze App über `app.request()`  |
-| HTTP-Mocks  | `tests/mock-server/`                 | MSW             | **alle** ausgehenden REST-Calls |
+| Art         | Ort                                  | Werkzeug | Was                             |
+| ----------- | ------------------------------------ | -------- | ------------------------------- |
+| Unit        | `src/**/*.spec.ts` (neben dem Code)  | Vitest   | Helper, Actions, Adapter        |
+| Integration | `tests/integration/**/*.int.spec.ts` | Vitest   | Ganze App über `app.request()`  |
+| HTTP-Mocks  | `tests/mock-server/`                 | MSW      | **alle** ausgehenden REST-Calls |
 
 - **Alle REST-Calls laufen gegen den MSW-Mockserver.** `onUnhandledFrame: 'error'` lässt jeden
   nicht gemockten Request scheitern – Tests haben keinen Netzwerkzugriff.
 - Neuer externer Endpunkt → Default-Handler in `tests/mock-server/handlers/<system>.handlers.ts`
   (mit `recorded(...)` für Assertions über `requestLog`). Fehlerfälle als exportierte Factory,
   im Test via `mockServer.use(...)`.
-- Integrationstests nutzen eine echte Postgres-Engine (PGlite, in-process) mit den echten
-  Migrationen – kein Docker nötig.
-- Unit-Tests von Actions nutzen die Fakes aus `tests/fakes/`, keine DB.
+- Die Mocks sind **zustandsbehaftet** wie die echten Systeme (EÜRwerk-Mandanten, Stripe-Sessions,
+  PayPal-Orders) und über `euerwerkMock`, `stripeMock`, `paypalMock` steuerbar; Reset nach
+  jedem Test.
+- Unit-Tests von Actions nutzen `vi.fn()`-Fakes der Ports.
 - **Testdaten mit `@faker-js/faker`** über die Factories in `tests/factories/`. Feste Werte nur,
   wenn sie für die Assertion relevant sind (z.B. Beträge für Rundungstests).
 - Jeder Test enthält mindestens eine Assertion (`expect.requireAssertions`).

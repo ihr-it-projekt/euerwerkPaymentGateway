@@ -18,8 +18,13 @@ const addressFields = (customer: Customer): Record<string, string> => {
 	};
 };
 
-/** Shop-Kunde → EÜRwerk `CreateContactInput`. */
+/** Quelle der externen Kunden-ID in EÜRwerk (Kontakt eindeutig pro Mandant + Quelle + ID). */
+export const CONTACT_EXTERNAL_SOURCE = 'payment-gateway';
+
+/** Shop-Kunde → EÜRwerk `CreateContactInput` (idempotent über `externalSource`/`externalId`). */
 export const buildContactPayload = (customer: Customer): Record<string, string> => ({
+	externalSource: CONTACT_EXTERNAL_SOURCE,
+	externalId: customer.id,
 	type: 'CUSTOMER',
 	kind: customer.companyName ? 'ORGANIZATION' : 'PERSON',
 	name: displayName(customer),

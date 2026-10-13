@@ -1,31 +1,29 @@
-import type { PayPalCredentials } from '../../domain/merchant/models/merchant.schema.ts';
+import { createHash } from 'node:crypto';
+import type { PayPalCredentials } from '../../domain/config/models/payment-config.schema.ts';
 import type {
 	PaymentProvider,
 	WebhookProcessor,
 	WebhookRequest
 } from '../../domain/payment/models/payment-provider.port.ts';
 import { DomainError } from '../../shared/errors/domain-error.ts';
-import type { PayPalApiClient, PayPalVerificationPayload } from './paypal-api.client.ts';
 import { buildPayPalOrder } from './build-paypal-order.helper.ts';
-import { PAYPAL_EVENT_HANDLERS } from './paypal-event-handlers.ts';
-import { type PayPalOrderResponse, PayPalWebhookEventSchema } from './paypal.schemas.ts';
+import type { PayPalApiClient, PayPalVerificationPayload } from './paypal-api.client.ts';
+import { handlePayPalEvent } from './paypal-event-handlers.ts';
+import { PayPalWebhookEventSchema } from './paypal.schemas.ts';
+import { readGatewayOrder, toPayPalCheckoutView } from './read-paypal-order.ts';
 
-const APPROVAL_RELS = new Set(['payer-action', 'approve']);
-
-const requireCredentials = (credentials: PayPalCredentials | undefined): PayPalCredentials => {
+const requireCredentials = (
+	credentials: PayPalCredentials | null | undefined
+): PayPalCredentials => {
 	if (!credentials) {
 		throw new DomainError('PROVIDER_NOT_CONFIGURED', 'PayPal ist nicht konfiguriert');
 	}
 	return credentials;
 };
 
-const findApprovalUrl = (order: PayPalOrderResponse): string => {
-	const link = order.links.find((candidate) => APPROVAL_RELS.has(candidate.rel));
-	if (!link) {
-		throw new DomainError('UPSTREAM_ERROR', 'PayPal hat keinen Freigabe-Link geliefert');
-	}
-	return link.href;
-};
+/** Gleicher Request → gleiche Request-Id → PayPal liefert bei Retries dieselbe Order. */
+const requestIdFor = (order: unknown): string =>
+	`pgw-${createHash('sha256').update(JSON.stringify(order)).digest('hex').slice(0, 64)}`;
 
 const parseEvent = (rawBody: string): unknown => {
 	try {
@@ -54,32 +52,47 @@ const toVerificationPayload = (
 	};
 };
 
+const toSession = (
+	view: ReturnType<typeof toPayPalCheckoutView>
+): { providerReference: string; redirectUrl: string } => {
+	if (!view.redirectUrl) {
+		throw new DomainError('UPSTREAM_ERROR', 'PayPal hat keinen Freigabe-Link geliefert');
+	}
+	return { providerReference: view.id.slice('paypal.'.length), redirectUrl: view.redirectUrl };
+};
+
 export const createPayPalProvider = (api: PayPalApiClient): PaymentProvider => ({
 	name: 'paypal',
 	webhookSource: 'paypal',
-	createCheckoutSession: async (checkout, credentials) => {
-		const token = await api.getAccessToken(requireCredentials(credentials.paypal));
-		const order = await api.createOrder(
-			token,
-			buildPayPalOrder(checkout),
-			`checkout-${checkout.id}`
-		);
-		return { providerReference: order.id, redirectUrl: findApprovalUrl(order) };
+	createCheckoutSession: async (checkout, config) => {
+		const token = await api.getAccessToken(requireCredentials(config.paypal));
+		const body = buildPayPalOrder(checkout);
+		const gateway = readGatewayOrder(await api.createOrder(token, body, requestIdFor(body)));
+		if (!gateway) {
+			throw new DomainError('UPSTREAM_ERROR', 'PayPal-Order ohne Gateway-Kennzeichnung');
+		}
+		return toSession(toPayPalCheckoutView(gateway));
+	},
+	getCheckout: async (orderId, config) => {
+		const token = await api.getAccessToken(requireCredentials(config.paypal));
+		const gateway = readGatewayOrder(await api.getOrder(token, orderId));
+		if (!gateway) {
+			throw new DomainError('NOT_FOUND', 'Checkout nicht gefunden');
+		}
+		return toPayPalCheckoutView(gateway);
 	}
 });
 
 export const createPayPalWebhookProcessor = (api: PayPalApiClient): WebhookProcessor => ({
 	source: 'paypal',
-	processWebhook: async (request, credentials) => {
-		const paypal = requireCredentials(credentials.paypal);
+	processWebhook: async (request, config) => {
+		const paypal = requireCredentials(config.paypal);
 		const payload = parseEvent(request.rawBody);
 		const token = await api.getAccessToken(paypal);
 		const verification = toVerificationPayload(request, paypal.webhookId, payload);
 		if (!(await api.verifyWebhookSignature(token, verification))) {
 			throw new DomainError('INVALID_WEBHOOK_SIGNATURE', 'Ungültige PayPal-Signatur');
 		}
-		const event = PayPalWebhookEventSchema.parse(payload);
-		const handler = PAYPAL_EVENT_HANDLERS[event.event_type];
-		return handler ? handler(event, { api, token }) : null;
+		return handlePayPalEvent(PayPalWebhookEventSchema.parse(payload), { api, token });
 	}
 });

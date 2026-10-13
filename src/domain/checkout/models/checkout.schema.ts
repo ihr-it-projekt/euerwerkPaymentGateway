@@ -16,10 +16,8 @@ export const CheckoutStatusSchema = z.enum([
 ]);
 export type CheckoutStatus = z.infer<typeof CheckoutStatusSchema>;
 
-export const AccountingStatusSchema = z.enum(['NOT_REQUIRED', 'PENDING', 'BOOKED', 'FAILED']);
-export type AccountingStatus = z.infer<typeof AccountingStatusSchema>;
-
 export const TaxRateSchema = z.union([z.literal(0), z.literal(7), z.literal(19)]);
+export type TaxRate = z.infer<typeof TaxRateSchema>;
 
 export const AddressSchema = z.object({
 	line1: z.string().trim().min(1),
@@ -30,7 +28,7 @@ export const AddressSchema = z.object({
 });
 
 export const CustomerSchema = z.object({
-	id: z.string().trim().min(1).describe('Kunden-ID im Shop'),
+	id: z.string().trim().min(1).max(100).describe('Kunden-ID im Shop'),
 	email: z.email(),
 	firstName: z.string().trim().optional(),
 	lastName: z.string().trim().optional(),
@@ -53,31 +51,46 @@ export const CreateCheckoutInputSchema = z.object({
 	reference: z.string().trim().min(1).max(127).describe('Bestell-/Transaktions-ID im Shop'),
 	currency: z.string().length(3).toUpperCase().default('EUR'),
 	customer: CustomerSchema,
-	items: z.array(LineItemSchema).min(1),
+	items: z.array(LineItemSchema).min(1).max(100),
 	successUrl: z.url(),
 	cancelUrl: z.url(),
-	metadata: z.record(z.string(), z.string()).default({})
+	metadata: z
+		.record(z.string().max(40), z.string().max(500))
+		.refine((value) => Object.keys(value).length <= 20, 'Maximal 20 Metadaten-Einträge')
+		.default({})
 });
 export type CreateCheckoutInput = z.infer<typeof CreateCheckoutInputSchema>;
 
-export interface Checkout {
-	id: string;
-	merchantId: string;
-	reference: string;
+/** Alles, was ein Provider zum Anlegen der Zahlung braucht (wird dort als Metadaten abgelegt). */
+export type CheckoutRequest = CreateCheckoutInput & {
+	amountTotal: number;
+	/** EÜRwerk-Kontakt des Kunden – wird beim Provider gespeichert und später zum Buchen genutzt. */
+	contactId: string;
+};
+
+/**
+ * Bezahlter Checkout, rekonstruiert aus den Provider-Daten – Grundlage für die Buchung.
+ * Das Gateway speichert selbst nichts.
+ */
+export interface PaymentRecord {
+	checkoutId: string;
 	provider: ProviderName;
-	status: CheckoutStatus;
+	reference: string;
+	contactId: string;
 	currency: string;
 	amountTotal: number;
-	customer: Customer;
 	items: LineItem[];
-	successUrl: string;
-	cancelUrl: string;
-	metadata: Record<string, string>;
-	providerReference: string | null;
 	providerPaymentId: string | null;
+}
+
+/** Status-Sicht auf einen Checkout (live beim Provider abgefragt). */
+export interface CheckoutView {
+	id: string;
+	provider: ProviderName;
+	status: CheckoutStatus;
+	reference: string;
+	currency: string;
+	amountTotal: number;
 	redirectUrl: string | null;
-	accountingStatus: AccountingStatus;
-	accountingInvoiceId: string | null;
-	createdAt: Date;
-	updatedAt: Date;
+	providerPaymentId: string | null;
 }

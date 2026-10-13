@@ -1,71 +1,129 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { http, HttpResponse } from 'msw';
+import type { PaymentConfig } from '#src/domain/config/models/payment-config.schema.ts';
 import { EUERWERK_API } from '../constants.ts';
 import { recorded } from '../request-log.ts';
 
-interface InvoiceItemBody {
-	quantity: number;
-	unitPrice: number;
-	taxRate: number;
+interface MockInvoice {
+	id: string;
+	status: 'DRAFT' | 'OPEN' | 'PAID';
+	externalReference: string;
+	grossAmount: number;
+	body: Record<string, unknown>;
 }
 
-/** Bildet die EÜRwerk-Berechnung nach: Netto pro Position in Cent runden, Steuer aufschlagen. */
-const calculateGross = (items: InvoiceItemBody[]): number => {
-	const cents = items.reduce((sum, item) => {
-		const net = Math.round(item.quantity * item.unitPrice * 100);
-		return sum + net + Math.round((net * item.taxRate) / 100);
-	}, 0);
-	return cents / 100;
+interface Tenant {
+	config: PaymentConfig;
+	contacts: Map<string, string>;
+	invoices: Map<string, MockInvoice>;
+}
+
+const tenants = new Map<string, Tenant>();
+
+const tenantOf = (request: Request): Tenant | undefined =>
+	tenants.get(request.headers.get('authorization')?.replace(/^Bearer /, '') ?? '');
+
+const unauthorized = (): Response =>
+	HttpResponse.json({ error: 'Nicht authentifiziert' }, { status: 401 });
+
+const grossOf = (items: { quantity: number; unitPrice: number }[]): number =>
+	Math.round(items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0) * 100) / 100;
+
+const findInvoice = (tenant: Tenant, id: string): MockInvoice | undefined =>
+	[...tenant.invoices.values()].find((invoice) => invoice.id === id);
+
+/** Test-API des EÜRwerk-Mocks (Mandanten anlegen, Zustand prüfen). */
+export const euerwerkMock = {
+	registerTenant: (config: PaymentConfig): string => {
+		const apiKey = `ewk_live_${randomBytes(24).toString('hex')}`;
+		tenants.set(apiKey, { config, contacts: new Map(), invoices: new Map() });
+		return apiKey;
+	},
+	revoke: (apiKey: string): void => {
+		tenants.delete(apiKey);
+	},
+	invoices: (apiKey: string): MockInvoice[] => [...(tenants.get(apiKey)?.invoices.values() ?? [])],
+	reset: (): void => {
+		tenants.clear();
+	}
 };
 
-const unauthorized = (request: Request): Response | null =>
-	request.headers.get('authorization')?.startsWith('Bearer ')
-		? null
-		: HttpResponse.json({ error: 'Unauthorized' }, { status: 401 });
-
 export const euerwerkHandlers = [
+	http.get(
+		`${EUERWERK_API}/payment-gateway/config`,
+		recorded(({ request }) => {
+			const tenant = tenantOf(request);
+			return tenant ? HttpResponse.json(tenant.config) : unauthorized();
+		})
+	),
 	http.post(
 		`${EUERWERK_API}/contacts`,
 		recorded(async ({ request }) => {
-			const body = (await request.json()) as Record<string, unknown>;
-			return (
-				unauthorized(request) ??
-				HttpResponse.json({ id: randomUUID(), customerNumber: '10001', ...body }, { status: 201 })
-			);
+			const tenant = tenantOf(request);
+			if (!tenant) return unauthorized();
+			const body = (await request.json()) as { externalSource: string; externalId: string };
+			const key = `${body.externalSource}:${body.externalId}`;
+			const existing = tenant.contacts.get(key);
+			if (existing) return HttpResponse.json({ id: existing, ...body }, { status: 200 });
+			const id = randomUUID();
+			tenant.contacts.set(key, id);
+			return HttpResponse.json({ id, ...body }, { status: 201 });
 		})
 	),
 	http.post(
 		`${EUERWERK_API}/invoices`,
 		recorded(async ({ request }) => {
-			const body = (await request.json()) as { items: InvoiceItemBody[] };
-			return (
-				unauthorized(request) ??
-				HttpResponse.json(
-					{
-						id: randomUUID(),
-						status: 'DRAFT',
-						grossAmount: calculateGross(body.items),
-						paidAmount: 0
-					},
-					{ status: 201 }
-				)
-			);
+			const tenant = tenantOf(request);
+			if (!tenant) return unauthorized();
+			const body = (await request.json()) as MockInvoice['body'] & {
+				externalReference: string;
+				items: { quantity: number; unitPrice: number }[];
+			};
+			const existing = tenant.invoices.get(body.externalReference);
+			if (existing) return HttpResponse.json(existing, { status: 200 });
+			const invoice: MockInvoice = {
+				id: randomUUID(),
+				status: 'DRAFT',
+				externalReference: body.externalReference,
+				grossAmount: grossOf(body.items),
+				body
+			};
+			tenant.invoices.set(body.externalReference, invoice);
+			return HttpResponse.json(invoice, { status: 201 });
 		})
 	),
 	http.post(
 		`${EUERWERK_API}/invoices/:id/enshrine`,
-		recorded(({ params }) =>
-			HttpResponse.json({ id: params.id, status: 'OPEN', isEnshrined: true })
-		)
+		recorded(({ request, params }) => {
+			const invoice = findInvoice(
+				tenantOf(request) ?? ({ invoices: new Map() } as Tenant),
+				String(params.id)
+			);
+			if (invoice?.status !== 'DRAFT') {
+				return HttpResponse.json({ error: 'Nicht festschreibbar' }, { status: 400 });
+			}
+			invoice.status = 'OPEN';
+			return HttpResponse.json(invoice);
+		})
 	),
 	http.post(
 		`${EUERWERK_API}/invoices/:id/book-amount`,
-		recorded(({ params }) => HttpResponse.json({ id: params.id, status: 'PAID' }))
+		recorded(({ request, params }) => {
+			const invoice = findInvoice(
+				tenantOf(request) ?? ({ invoices: new Map() } as Tenant),
+				String(params.id)
+			);
+			if (invoice?.status !== 'OPEN') {
+				return HttpResponse.json({ error: 'Nicht buchbar' }, { status: 400 });
+			}
+			invoice.status = 'PAID';
+			return HttpResponse.json(invoice);
+		})
 	)
 ];
 
 export const euerwerkFailingInvoiceHandler = () =>
 	http.post(
 		`${EUERWERK_API}/invoices`,
-		recorded(() => HttpResponse.json({ error: 'Mocked EÜRwerk failure' }, { status: 400 }))
+		recorded(() => HttpResponse.json({ error: 'Mocked EÜRwerk failure' }, { status: 500 }))
 	);

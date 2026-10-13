@@ -1,10 +1,12 @@
-import { DomainError } from '../errors/domain-error.ts';
+import { DomainError, type DomainErrorCode } from '../errors/domain-error.ts';
 
 export interface FetchJsonOptions {
 	method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 	headers?: Record<string, string>;
 	body?: unknown;
 	formBody?: URLSearchParams;
+	/** HTTP-Status → fachlicher Fehlercode (Default für alle anderen: `UPSTREAM_ERROR`). */
+	errorCodes?: Partial<Record<number, DomainErrorCode>>;
 }
 
 const buildBody = (options: FetchJsonOptions): RequestInit['body'] =>
@@ -16,9 +18,20 @@ const buildHeaders = (options: FetchJsonOptions): Record<string, string> => ({
 	...options.headers
 });
 
+const toError = (
+	status: number,
+	url: string,
+	text: string,
+	options: FetchJsonOptions
+): DomainError =>
+	new DomainError(
+		options.errorCodes?.[status] ?? 'UPSTREAM_ERROR',
+		`${status} von ${url}: ${text.slice(0, 500)}`
+	);
+
 /**
  * Dünner fetch-Wrapper für Upstream-REST-APIs.
- * Nicht-2xx-Antworten werden zu `DomainError('UPSTREAM_ERROR')`.
+ * Nicht-2xx-Antworten werden zu `DomainError` (Code laut `errorCodes`, sonst `UPSTREAM_ERROR`).
  */
 export const fetchJson = async (url: string, options: FetchJsonOptions = {}): Promise<unknown> => {
 	const response = await fetch(url, {
@@ -28,7 +41,7 @@ export const fetchJson = async (url: string, options: FetchJsonOptions = {}): Pr
 	});
 	const text = await response.text();
 	if (!response.ok) {
-		throw new DomainError('UPSTREAM_ERROR', `${response.status} von ${url}: ${text.slice(0, 500)}`);
+		throw toError(response.status, url, text, options);
 	}
 	return text === '' ? null : (JSON.parse(text) as unknown);
 };

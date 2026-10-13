@@ -1,10 +1,12 @@
-import type { CheckoutView } from '#src/domain/checkout/helpers/to-checkout-view.helper.ts';
-import type { CreateCheckoutInput } from '#src/domain/checkout/models/checkout.schema.ts';
+import type {
+	CheckoutView,
+	CreateCheckoutInput
+} from '#src/domain/checkout/models/checkout.schema.ts';
 import { buildCreateCheckoutInput } from '../../factories/checkout.factory.ts';
-import { authHeaders, type TestContext } from './test-app.ts';
+import { authHeaders, type TestApp } from './test-app.ts';
 
 export const postCheckout = async (
-	app: TestContext['app'],
+	app: TestApp,
 	apiKey: string,
 	overrides: Partial<CreateCheckoutInput> = {}
 ): Promise<Response> =>
@@ -15,7 +17,7 @@ export const postCheckout = async (
 	});
 
 export const createCheckout = async (
-	app: TestContext['app'],
+	app: TestApp,
 	apiKey: string,
 	overrides: Partial<CreateCheckoutInput> = {}
 ): Promise<CheckoutView> => {
@@ -27,10 +29,14 @@ export const createCheckout = async (
 };
 
 export const getCheckout = async (
-	app: TestContext['app'],
+	app: TestApp,
 	apiKey: string,
 	id: string
 ): Promise<CheckoutView> => {
 	const response = await app.request(`/v1/checkouts/${id}`, { headers: authHeaders(apiKey) });
 	return (await response.json()) as CheckoutView;
 };
+
+/** Checkout-ID `<provider>.<ref>` → Provider-Referenz (Stripe-Session- bzw. PayPal-Order-ID). */
+export const providerRef = (checkout: CheckoutView): string =>
+	checkout.id.slice(checkout.id.indexOf('.') + 1);

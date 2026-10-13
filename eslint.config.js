@@ -3,7 +3,7 @@ import prettier from 'eslint-config-prettier';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-	{ ignores: ['node_modules/', 'coverage/', 'reports/', 'drizzle/'] },
+	{ ignores: ['node_modules/', 'coverage/', 'reports/'] },
 	js.configs.recommended,
 	...tseslint.configs.strictTypeChecked,
 	prettier,
@@ -48,7 +48,7 @@ export default tseslint.config(
 		}
 	},
 	{
-		files: ['src/index.ts', 'src/infrastructure/db/migrate.ts'],
+		files: ['src/index.ts'],
 		rules: { 'no-console': 'off' }
 	},
 	{

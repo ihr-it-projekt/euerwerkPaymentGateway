@@ -1,40 +1,79 @@
 import type { PaymentOutcome } from '../../domain/payment/models/payment-provider.port.ts';
-import { extractCapture } from './extract-capture.helper.ts';
 import type { PayPalApiClient } from './paypal-api.client.ts';
-import { PayPalCaptureResourceSchema, type PayPalWebhookEvent } from './paypal.schemas.ts';
-import { toCaptureStatus } from './to-capture-status.helper.ts';
+import {
+	PayPalCaptureResourceSchema,
+	PayPalOrderResourceSchema,
+	type PayPalWebhookEvent
+} from './paypal.schemas.ts';
+import {
+	type GatewayOrder,
+	readGatewayOrder,
+	toPayPalCheckoutView,
+	toPayPalPaymentRecord
+} from './read-paypal-order.ts';
 
-export type PayPalEventHandler = (
-	event: PayPalWebhookEvent,
-	context: { api: PayPalApiClient; token: string }
-) => Promise<PaymentOutcome>;
+interface HandlerContext {
+	api: PayPalApiClient;
+	token: string;
+}
 
-/** Kunde hat freigegeben → Gateway captured die Order selbst. */
-const handleOrderApproved: PayPalEventHandler = async (event, { api, token }) => {
-	const orderId = String(event.resource.id);
-	const capture = extractCapture(await api.captureOrder(token, orderId));
-	return {
-		providerReference: orderId,
-		status: toCaptureStatus(capture.status),
-		providerPaymentId: capture.id
-	};
+interface EventSpec {
+	orderId: (event: PayPalWebhookEvent) => string;
+	/** Bei Freigabe captured das Gateway selbst (idempotent per PayPal-Request-Id). */
+	capture: boolean;
+}
+
+const fromOrderResource = (event: PayPalWebhookEvent): string =>
+	PayPalOrderResourceSchema.parse(event.resource).id;
+
+const fromCaptureResource = (event: PayPalWebhookEvent): string =>
+	PayPalCaptureResourceSchema.parse(event.resource).supplementary_data.related_ids.order_id;
+
+const captureEvent: EventSpec = { orderId: fromCaptureResource, capture: false };
+
+const EVENTS: Readonly<Record<string, EventSpec>> = {
+	'CHECKOUT.ORDER.APPROVED': { orderId: fromOrderResource, capture: true },
+	'PAYMENT.CAPTURE.COMPLETED': captureEvent,
+	'PAYMENT.CAPTURE.PENDING': captureEvent,
+	'PAYMENT.CAPTURE.DENIED': captureEvent,
+	'PAYMENT.CAPTURE.DECLINED': captureEvent
 };
 
-const captureHandler =
-	(status: PaymentOutcome['status']): PayPalEventHandler =>
-	(event) => {
-		const resource = PayPalCaptureResourceSchema.parse(event.resource);
-		return Promise.resolve({
-			providerReference: resource.supplementary_data.related_ids.order_id,
-			status,
-			providerPaymentId: resource.id
-		});
-	};
+const toOutcome = (gateway: GatewayOrder): PaymentOutcome | null => {
+	const { status } = toPayPalCheckoutView(gateway);
+	if (status === 'PENDING') {
+		return null;
+	}
+	const payment = status === 'SUCCEEDED' ? toPayPalPaymentRecord(gateway) : null;
+	return { providerReference: gateway.order.id, status, payment };
+};
 
-export const PAYPAL_EVENT_HANDLERS: Readonly<Record<string, PayPalEventHandler>> = {
-	'CHECKOUT.ORDER.APPROVED': handleOrderApproved,
-	'PAYMENT.CAPTURE.COMPLETED': captureHandler('SUCCEEDED'),
-	'PAYMENT.CAPTURE.PENDING': captureHandler('PROCESSING'),
-	'PAYMENT.CAPTURE.DENIED': captureHandler('FAILED'),
-	'PAYMENT.CAPTURE.DECLINED': captureHandler('FAILED')
+const captureIfApproved = async (
+	gateway: GatewayOrder,
+	{ api, token }: HandlerContext
+): Promise<GatewayOrder> => {
+	if (gateway.order.status !== 'APPROVED') {
+		return gateway;
+	}
+	const captured = await api.captureOrder(token, gateway.order.id);
+	return readGatewayOrder(captured) ?? gateway;
+};
+
+/**
+ * Lädt immer zuerst die Order: fremde Orders (anderes System im selben PayPal-Konto) werden
+ * weder captured noch gebucht.
+ */
+export const handlePayPalEvent = async (
+	event: PayPalWebhookEvent,
+	context: HandlerContext
+): Promise<PaymentOutcome | null> => {
+	const spec = EVENTS[event.event_type];
+	if (!spec) {
+		return null;
+	}
+	const gateway = readGatewayOrder(await context.api.getOrder(context.token, spec.orderId(event)));
+	if (!gateway) {
+		return null;
+	}
+	return toOutcome(spec.capture ? await captureIfApproved(gateway, context) : gateway);
 };

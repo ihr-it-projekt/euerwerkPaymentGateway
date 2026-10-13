@@ -1,8 +1,6 @@
-import type { Merchant } from '../domain/merchant/models/merchant.schema.ts';
-
-/** Hono-Kontext: von der Auth-Middleware gesetzter Merchant. */
+/** Hono-Kontext: EÜRwerk-API-Key des Shops (von der Middleware aus `Authorization` gelesen). */
 export interface AppEnv {
 	Variables: {
-		merchant: Merchant;
+		apiKey: string;
 	};
 }

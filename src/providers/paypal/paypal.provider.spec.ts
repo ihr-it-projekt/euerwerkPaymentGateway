@@ -1,13 +1,13 @@
-import { http, HttpResponse } from 'msw';
 import { describe, expect, it } from 'vitest';
-import { buildCheckout, buildLineItem } from '#tests/factories/checkout.factory.ts';
-import { buildCredentials } from '#tests/factories/merchant.factory.ts';
+import { buildCheckoutRequest, buildLineItem } from '#tests/factories/checkout.factory.ts';
+import { buildPaymentConfig } from '#tests/factories/config.factory.ts';
 import { PAYPAL_API, PAYPAL_INVALID_SIGNATURE } from '#tests/mock-server/constants.ts';
+import { paypalMock } from '#tests/mock-server/handlers/paypal.handlers.ts';
 import { requestLog } from '#tests/mock-server/request-log.ts';
-import { mockServer } from '#tests/mock-server/server.ts';
 import { createPayPalApiClient } from './paypal-api.client.ts';
+import { contactIdFromCustomId, taxRateFromSku, toTaxSku } from './paypal-metadata.ts';
 import { createPayPalProvider, createPayPalWebhookProcessor } from './paypal.provider.ts';
-import { toCaptureStatus } from './to-capture-status.helper.ts';
+import { toOrderStatus } from './to-order-status.helper.ts';
 
 const api = createPayPalApiClient(PAYPAL_API);
 const provider = createPayPalProvider(api);
@@ -18,92 +18,90 @@ const webhook = (body: unknown, signature = 'valid') => ({
 	headers: { 'paypal-transmission-sig': signature, 'paypal-transmission-id': 'tid' }
 });
 
-describe('toCaptureStatus', () => {
+const captureEvent = (eventType: string, orderId: string) => ({
+	id: 'WH-1',
+	event_type: eventType,
+	resource: { supplementary_data: { related_ids: { order_id: orderId } } }
+});
+
+describe('PayPal-Metadaten & Status', () => {
+	it('kodiert Kontakt und Steuersatz verlustfrei in der Order', () => {
+		expect(contactIdFromCustomId('pgw:abc')).toBe('abc');
+		expect(contactIdFromCustomId('fremd')).toBeNull();
+		expect(contactIdFromCustomId(undefined)).toBeNull();
+		expect(taxRateFromSku(toTaxSku(7))).toBe(7);
+		expect(() => taxRateFromSku('pgw-tax-16')).toThrow();
+	});
+
 	it.each([
-		['COMPLETED', 'SUCCEEDED'],
-		['PENDING', 'PROCESSING'],
-		['DECLINED', 'FAILED'],
-		['FAILED', 'FAILED'],
-		['IRGENDWAS', 'PROCESSING']
-	])('%s → %s', (status, expected) => {
-		expect(toCaptureStatus(status)).toBe(expected);
+		['PAYER_ACTION_REQUIRED', null, 'PENDING'],
+		['APPROVED', null, 'PROCESSING'],
+		['VOIDED', null, 'FAILED'],
+		['COMPLETED', 'COMPLETED', 'SUCCEEDED'],
+		['COMPLETED', 'PENDING', 'PROCESSING'],
+		['COMPLETED', 'DECLINED', 'FAILED'],
+		['UNBEKANNT', null, 'PROCESSING']
+	])('%s / Capture %s → %s', (order, capture, expected) => {
+		expect(toOrderStatus(order, capture)).toBe(expected);
 	});
 });
 
-describe('PayPalProvider.createCheckoutSession', () => {
-	it('holt ein Token per Client-Credentials und legt die Order an', async () => {
-		const credentials = buildCredentials();
-		const checkout = buildCheckout({
-			items: [buildLineItem({ quantity: 2, unitAmount: 1050, description: 'x' })]
+describe('PayPalProvider', () => {
+	it('holt ein Token per Client-Credentials und legt die Order idempotent an', async () => {
+		const config = buildPaymentConfig();
+		const checkout = buildCheckoutRequest({
+			items: [buildLineItem({ description: 'x'.repeat(200) })]
 		});
 
-		const session = await provider.createCheckoutSession(checkout, credentials);
+		const session = await provider.createCheckoutSession(checkout, config);
 
 		const [tokenCall] = requestLog.find('POST', /\/v1\/oauth2\/token$/);
-		const basic = Buffer.from(
-			`${credentials.paypal!.clientId}:${credentials.paypal!.clientSecret}`
-		);
+		const basic = Buffer.from(`${config.paypal!.clientId}:${config.paypal!.clientSecret}`);
 		expect(tokenCall?.headers.get('authorization')).toBe(`Basic ${basic.toString('base64')}`);
-		expect(tokenCall?.body).toEqual({ grant_type: 'client_credentials' });
-		expect(session.providerReference).toEqual(expect.any(String));
+		const [orderCall] = requestLog.find('POST', /\/v2\/checkout\/orders$/);
+		expect(orderCall?.headers.get('paypal-request-id')).toMatch(/^pgw-[0-9a-f]{64}$/);
 		expect(session.redirectUrl).toContain(`token=${session.providerReference}`);
 	});
 
-	it('wirft UPSTREAM_ERROR ohne Freigabe-Link', async () => {
-		mockServer.use(
-			http.post(`${PAYPAL_API}/v2/checkout/orders`, () =>
-				HttpResponse.json({ id: 'O1', status: 'CREATED', links: [] })
-			)
-		);
+	it('liefert NOT_FOUND für fremde Orders und ungültige Order-IDs', async () => {
+		const config = buildPaymentConfig();
+		const foreign = paypalMock.seedForeignOrder(config.paypal!.clientId);
 
-		await expect(
-			provider.createCheckoutSession(buildCheckout(), buildCredentials())
-		).rejects.toMatchObject({
-			code: 'UPSTREAM_ERROR'
+		await expect(provider.getCheckout(foreign, config)).rejects.toMatchObject({
+			code: 'NOT_FOUND'
 		});
-	});
-
-	it('wirft PROVIDER_NOT_CONFIGURED ohne PayPal-Credentials', async () => {
-		await expect(
-			provider.createCheckoutSession(buildCheckout(), buildCredentials({ paypal: undefined }))
-		).rejects.toMatchObject({ code: 'PROVIDER_NOT_CONFIGURED' });
+		await expect(provider.getCheckout('../evil', config)).rejects.toMatchObject({
+			code: 'NOT_FOUND'
+		});
 	});
 });
 
-describe('PayPalProvider.processWebhook', () => {
-	const credentials = buildCredentials();
-
-	it('captured bei CHECKOUT.ORDER.APPROVED', async () => {
-		const outcome = await webhooks.processWebhook(
-			webhook({ id: 'WH-1', event_type: 'CHECKOUT.ORDER.APPROVED', resource: { id: 'ORDER-1' } }),
-			credentials
-		);
-
-		expect(outcome).toMatchObject({ providerReference: 'ORDER-1', status: 'SUCCEEDED' });
-		const [capture] = requestLog.find('POST', /ORDER-1\/capture$/);
-		expect(capture?.headers.get('paypal-request-id')).toBe('capture-ORDER-1');
-	});
-
+describe('PayPalWebhookProcessor', () => {
 	it('übergibt alle Transmission-Header an die Verifikation', async () => {
-		await webhooks.processWebhook(
-			webhook({ id: 'WH-1', event_type: 'CUSTOMER.UPDATED', resource: {} }),
-			credentials
-		);
+		const config = buildPaymentConfig();
+		const event = { id: 'WH-1', event_type: 'CUSTOMER.UPDATED', resource: {} };
 
-		const [verification] = requestLog.find('POST', /verify-webhook-signature$/);
-		expect(verification?.body).toMatchObject({
+		await webhooks.processWebhook(webhook(event), config);
+
+		expect(requestLog.find('POST', /verify-webhook-signature$/)[0]?.body).toMatchObject({
 			transmission_id: 'tid',
 			transmission_sig: 'valid',
 			auth_algo: '',
-			webhook_id: credentials.paypal!.webhookId,
+			webhook_id: config.paypal!.webhookId,
 			webhook_event: { id: 'WH-1' }
 		});
 	});
 
-	it('liefert null für irrelevante Events', async () => {
+	it('meldet nichts für noch offene Orders', async () => {
+		const config = buildPaymentConfig();
+		const { providerReference } = await provider.createCheckoutSession(
+			buildCheckoutRequest(),
+			config
+		);
+
 		const outcome = await webhooks.processWebhook(
-			webhook({ id: 'WH-1', event_type: 'CUSTOMER.UPDATED', resource: {} }),
-			credentials
+			webhook(captureEvent('PAYMENT.CAPTURE.PENDING', providerReference)),
+			config
 		);
 
 		expect(outcome).toBeNull();
@@ -116,7 +114,7 @@ describe('PayPalProvider.processWebhook', () => {
 		],
 		['kein JSON', webhook('<xml/>')]
 	])('wirft INVALID_WEBHOOK_SIGNATURE: %s', async (_label, request) => {
-		await expect(webhooks.processWebhook(request, credentials)).rejects.toMatchObject({
+		await expect(webhooks.processWebhook(request, buildPaymentConfig())).rejects.toMatchObject({
 			code: 'INVALID_WEBHOOK_SIGNATURE'
 		});
 	});
