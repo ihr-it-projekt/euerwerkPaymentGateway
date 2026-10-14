@@ -15,17 +15,17 @@ describe('toPaymentMethod', () => {
 });
 
 describe('buildInvoiceDraft', () => {
-	it('übernimmt Bruttopositionen in EUR mit Checkout-ID als Idempotenz-Schlüssel', () => {
+	it('übernimmt Nettopositionen in EUR mit Checkout-ID als Idempotenz-Schlüssel', () => {
 		const payment = buildPaymentRecord({
 			items: [
 				buildLineItem({
 					name: 'A',
 					quantity: 2,
-					unitAmount: 999,
+					unitNetAmount: 999,
 					taxRate: 19,
 					description: 'Info'
 				}),
-				buildLineItem({ name: 'B', quantity: 1, unitAmount: 107, taxRate: 7 })
+				buildLineItem({ name: 'B', quantity: 1, unitNetAmount: 107, taxRate: 7 })
 			]
 		});
 
@@ -33,9 +33,10 @@ describe('buildInvoiceDraft', () => {
 			contactId: payment.contactId,
 			externalReference: payment.checkoutId,
 			headerText: `Bestellung ${payment.reference}`,
+			tax: payment.tax,
 			items: [
-				{ name: 'A', description: 'Info', quantity: 2, unitPriceGross: 9.99, taxRate: 19 },
-				{ name: 'B', quantity: 1, unitPriceGross: 1.07, taxRate: 7 }
+				{ name: 'A', description: 'Info', quantity: 2, unitPriceNet: 9.99, taxRate: 19 },
+				{ name: 'B', quantity: 1, unitPriceNet: 1.07, taxRate: 7 }
 			]
 		});
 	});

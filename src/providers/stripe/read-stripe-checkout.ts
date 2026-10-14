@@ -6,7 +6,9 @@ import {
 	type LineItem,
 	type PaymentRecord,
 	ProviderNameSchema,
-	TaxRateSchema
+	type TaxInfo,
+	TaxRateSchema,
+	TaxRegimeSchema
 } from '../../domain/checkout/models/checkout.schema.ts';
 import { callStripe } from './stripe-client.ts';
 import { STRIPE_META } from './stripe-metadata.ts';
@@ -15,13 +17,19 @@ import { toCheckoutStatus } from './to-checkout-status.helper.ts';
 const GatewayMetadataSchema = z.object({
 	[STRIPE_META.provider]: ProviderNameSchema,
 	[STRIPE_META.reference]: z.string().min(1),
-	[STRIPE_META.contactId]: z.string().min(1)
+	[STRIPE_META.contactId]: z.string().min(1),
+	[STRIPE_META.taxCountry]: z.string().length(2),
+	[STRIPE_META.taxRegime]: TaxRegimeSchema,
+	[STRIPE_META.amountNet]: z.coerce.number().pipe(z.int().nonnegative())
 });
 
 const ProductSchema = z.object({
 	name: z.string(),
 	description: z.string().nullish(),
-	metadata: z.object({ [STRIPE_META.taxRate]: z.coerce.number().pipe(TaxRateSchema) })
+	metadata: z.object({
+		[STRIPE_META.taxRate]: z.coerce.number().pipe(TaxRateSchema),
+		[STRIPE_META.kind]: z.string().optional()
+	})
 });
 
 export interface GatewaySession {
@@ -29,6 +37,8 @@ export interface GatewaySession {
 	provider: z.infer<typeof ProviderNameSchema>;
 	reference: string;
 	contactId: string;
+	tax: TaxInfo;
+	amountNet: number;
 }
 
 /** Nur vom Gateway erzeugte Sessions haben die Metadaten – fremde Sessions → `null`. */
@@ -41,7 +51,12 @@ export const readGatewaySession = (session: Stripe.Checkout.Session): GatewaySes
 		session,
 		provider: parsed.data[STRIPE_META.provider],
 		reference: parsed.data[STRIPE_META.reference],
-		contactId: parsed.data[STRIPE_META.contactId]
+		contactId: parsed.data[STRIPE_META.contactId],
+		tax: {
+			country: parsed.data[STRIPE_META.taxCountry],
+			regime: parsed.data[STRIPE_META.taxRegime]
+		},
+		amountNet: parsed.data[STRIPE_META.amountNet]
 	};
 };
 
@@ -50,16 +65,22 @@ const toPaymentIntentId = (session: Stripe.Checkout.Session): string | null => {
 	return typeof intent === 'string' ? intent : (intent?.id ?? null);
 };
 
-export const toStripeCheckoutView = (gateway: GatewaySession): CheckoutView => ({
-	id: formatCheckoutId(gateway.provider, gateway.session.id),
-	provider: gateway.provider,
-	status: toCheckoutStatus(gateway.session),
-	reference: gateway.reference,
-	currency: (gateway.session.currency ?? 'eur').toUpperCase(),
-	amountTotal: gateway.session.amount_total ?? 0,
-	redirectUrl: gateway.session.url,
-	providerPaymentId: toPaymentIntentId(gateway.session)
-});
+export const toStripeCheckoutView = (gateway: GatewaySession): CheckoutView => {
+	const amountTotal = gateway.session.amount_total ?? 0;
+	return {
+		id: formatCheckoutId(gateway.provider, gateway.session.id),
+		provider: gateway.provider,
+		status: toCheckoutStatus(gateway.session),
+		reference: gateway.reference,
+		currency: (gateway.session.currency ?? 'eur').toUpperCase(),
+		tax: gateway.tax,
+		amountNet: gateway.amountNet,
+		amountTax: amountTotal - gateway.amountNet,
+		amountTotal,
+		redirectUrl: gateway.session.url,
+		providerPaymentId: toPaymentIntentId(gateway.session)
+	};
+};
 
 /** Erwartete Struktur bei `expand: ['data.price.product']` – Abweichungen sind ein Fehler. */
 const StripeLineItemSchema = z.object({
@@ -68,14 +89,19 @@ const StripeLineItemSchema = z.object({
 	price: z.object({ unit_amount: z.int().nonnegative(), product: ProductSchema })
 });
 
-const toLineItem = (raw: Stripe.LineItem): LineItem => {
-	const item = StripeLineItemSchema.parse(raw);
+type StripeLineItem = z.infer<typeof StripeLineItemSchema>;
+
+/** Steuerzeilen (je Satz) sind keine Rechnungspositionen – EÜRwerk rechnet die Steuer selbst. */
+const isProductLine = (item: StripeLineItem): boolean =>
+	item.price.product.metadata[STRIPE_META.kind] !== 'tax';
+
+const toLineItem = (item: StripeLineItem): LineItem => {
 	const { product } = item.price;
 	return {
 		name: item.description ?? product.name,
 		...(product.description ? { description: product.description } : {}),
 		quantity: item.quantity,
-		unitAmount: item.price.unit_amount,
+		unitNetAmount: item.price.unit_amount,
 		taxRate: product.metadata[STRIPE_META.taxRate]
 	};
 };
@@ -98,8 +124,14 @@ export const loadStripePaymentRecord = async (
 		reference: gateway.reference,
 		contactId: gateway.contactId,
 		currency: view.currency,
+		tax: view.tax,
+		amountNet: view.amountNet,
+		amountTax: view.amountTax,
 		amountTotal: view.amountTotal,
-		items: lineItems.data.map(toLineItem),
+		items: lineItems.data
+			.map((raw) => StripeLineItemSchema.parse(raw))
+			.filter(isProductLine)
+			.map(toLineItem),
 		providerPaymentId: view.providerPaymentId
 	};
 };

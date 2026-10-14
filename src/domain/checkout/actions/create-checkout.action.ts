@@ -2,8 +2,8 @@ import type { AccountingGateway } from '../../accounting/models/accounting.port.
 import type { PaymentConfigSource } from '../../config/models/payment-config.port.ts';
 import type { PaymentProviderRegistry } from '../../payment/models/payment-provider.port.ts';
 import { assertProviderConfigured } from '../helpers/assert-provider-configured.helper.ts';
-import { calculateAmountTotal } from '../helpers/calculate-amount-total.helper.ts';
 import { formatCheckoutId } from '../helpers/checkout-id.helper.ts';
+import { priceCheckout } from '../helpers/price-checkout.helper.ts';
 import type {
 	CheckoutRequest,
 	CheckoutView,
@@ -31,10 +31,10 @@ export class CreateCheckoutAction {
 		const config = await this.#deps.configSource.load(apiKey);
 		assertProviderConfigured(config, input.provider);
 		const provider = this.#deps.providers[input.provider];
-		const amountTotal = calculateAmountTotal(input.items);
-		provider.assertEligible?.({ currency: input.currency, amountTotal });
+		const priced = priceCheckout(input.items);
+		provider.assertEligible?.({ currency: input.currency, amountTotal: priced.amountTotal });
 		const contactId = await this.#deps.accounting.upsertContact(apiKey, input.customer);
-		const request: CheckoutRequest = { ...input, amountTotal, contactId };
+		const request: CheckoutRequest = { ...input, ...priced, contactId };
 		const session = await provider.createCheckoutSession(request, config);
 		return {
 			id: formatCheckoutId(input.provider, session.providerReference),
@@ -42,7 +42,10 @@ export class CreateCheckoutAction {
 			status: 'PENDING',
 			reference: input.reference,
 			currency: input.currency,
-			amountTotal,
+			tax: input.tax,
+			amountNet: priced.amountNet,
+			amountTax: priced.amountTax,
+			amountTotal: priced.amountTotal,
 			redirectUrl: session.redirectUrl,
 			providerPaymentId: null
 		};

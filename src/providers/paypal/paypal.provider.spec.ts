@@ -5,7 +5,7 @@ import { PAYPAL_API, PAYPAL_INVALID_SIGNATURE } from '#tests/mock-server/constan
 import { paypalMock } from '#tests/mock-server/handlers/paypal.handlers.ts';
 import { requestLog } from '#tests/mock-server/request-log.ts';
 import { createPayPalApiClient } from './paypal-api.client.ts';
-import { contactIdFromCustomId, taxRateFromSku, toTaxSku } from './paypal-metadata.ts';
+import { readCustomId, taxRateFromSku, toCustomId, toTaxSku } from './paypal-metadata.ts';
 import { createPayPalProvider, createPayPalWebhookProcessor } from './paypal.provider.ts';
 import { toOrderStatus } from './to-order-status.helper.ts';
 
@@ -26,11 +26,22 @@ const captureEvent = (eventType: string, orderId: string) => ({
 
 describe('PayPal-Metadaten & Status', () => {
 	it('kodiert Kontakt und Steuersatz verlustfrei in der Order', () => {
-		expect(contactIdFromCustomId('pgw:abc')).toBe('abc');
-		expect(contactIdFromCustomId('fremd')).toBeNull();
-		expect(contactIdFromCustomId(undefined)).toBeNull();
+		const meta = {
+			contactId: '3f2b9c1e-0000-4000-8000-000000000001',
+			tax: { country: 'FI', regime: 'OSS' as const },
+			amountNet: 123456
+		};
+		const customId = toCustomId(meta);
+
+		expect(customId.length).toBeLessThanOrEqual(127);
+		expect(readCustomId(customId)).toEqual(meta);
+		expect(readCustomId('pgw:abc|DE|UNBEKANNT|1')).toBeNull();
+		expect(readCustomId('fremd')).toBeNull();
+		expect(readCustomId(undefined)).toBeNull();
+		expect(taxRateFromSku(toTaxSku(25.5))).toBe(25.5);
 		expect(taxRateFromSku(toTaxSku(7))).toBe(7);
-		expect(() => taxRateFromSku('pgw-tax-16')).toThrow();
+		expect(() => taxRateFromSku('pgw-tax-31')).toThrow();
+		expect(() => taxRateFromSku('fremd')).toThrow();
 	});
 
 	it.each([

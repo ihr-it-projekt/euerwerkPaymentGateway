@@ -74,7 +74,7 @@ describe('StripeProvider', () => {
 			customer_email: checkout.customer.email,
 			'metadata[orderId]': '42',
 			'metadata[pgw_contact_id]': checkout.contactId,
-			'line_items[0][price_data][tax_behavior]': 'inclusive'
+			'line_items[0][price_data][tax_behavior]': 'exclusive'
 		});
 	});
 
@@ -96,7 +96,7 @@ describe('StripeWebhookProcessor', () => {
 		const config = buildPaymentConfig();
 		const checkout = buildCheckoutRequest({
 			reference: 'ORDER-1',
-			items: [buildLineItem({ name: 'A', quantity: 2, unitAmount: 1070, taxRate: 7 })]
+			items: [buildLineItem({ name: 'A', quantity: 2, unitNetAmount: 1000, taxRate: 7 })]
 		});
 		const { providerReference } = await provider.createCheckoutSession(checkout, config);
 		const session = stripeMock.updateSession(providerReference, {
@@ -119,7 +119,7 @@ describe('StripeWebhookProcessor', () => {
 				contactId: checkout.contactId,
 				amountTotal: 2140,
 				providerPaymentId: 'pi_obj',
-				items: [{ name: 'A', quantity: 2, unitAmount: 1070, taxRate: 7 }]
+				items: [{ name: 'A', quantity: 2, unitNetAmount: 1000, taxRate: 7 }]
 			}
 		});
 	});

@@ -7,7 +7,8 @@ import { euerwerkRequest } from './euerwerk-request.helper.ts';
 const ContactSchema = z.object({ id: z.uuid() });
 const InvoiceSchema = z.object({
 	id: z.uuid(),
-	status: z.enum(['DRAFT', 'OPEN', 'PAID', 'PARTIALLY_PAID', 'CANCELLED'])
+	status: z.enum(['DRAFT', 'OPEN', 'PAID', 'PARTIALLY_PAID', 'CANCELLED']),
+	grossAmount: z.coerce.number()
 });
 
 /**
@@ -27,10 +28,12 @@ export const createEuerwerkAccountingGateway = (baseUrl: string): AccountingGate
 			contactId: draft.contactId,
 			externalReference: draft.externalReference,
 			headerText: draft.headerText,
-			priceMode: 'GROSS',
-			items: draft.items.map(({ unitPriceGross, ...item }) => ({
+			taxCountry: draft.tax.country,
+			taxRegime: draft.tax.regime,
+			priceMode: 'NET',
+			items: draft.items.map(({ unitPriceNet, ...item }) => ({
 				...item,
-				unitPrice: unitPriceGross
+				unitPrice: unitPriceNet
 			}))
 		};
 		const response = await fetchJson(`${baseUrl}/invoices`, euerwerkRequest(apiKey, 'POST', body));

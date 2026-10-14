@@ -62,7 +62,7 @@ describe('Wero (über Stripe) – zustandsloser Ablauf', () => {
 		['Nicht-EUR-Währung', { currency: 'USD' }],
 		[
 			'Betrag unter 0,50 €',
-			{ items: [{ name: 'Mini', quantity: 1, unitAmount: 49, taxRate: 19 as const }] }
+			{ items: [{ name: 'Mini', quantity: 1, unitNetAmount: 41, taxRate: 19 }] }
 		]
 	])('lehnt %s mit 400 ab, ohne Stripe oder EÜRwerk-Kontakt', async (_label, overrides) => {
 		const response = await postCheckout(app, tenant.apiKey, { provider: 'wero', ...overrides });

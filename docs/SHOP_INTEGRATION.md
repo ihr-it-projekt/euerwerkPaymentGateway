@@ -1,4 +1,4 @@
-# Shop-Anbindung (Ablösung von BillDynamics im TBShop)
+# Shop-Anbindung (TBShop, parallel zu BillDynamics)
 
 Das Gateway ist **zustandslos**. Merchant = EÜRwerk-Mandant. Der Shop sendet bei jedem Request den
 EÜRwerk-API-Key des Publishers; alles Weitere (Provider-Zugangsdaten, Buchhaltung) liegt in EÜRwerk,
@@ -41,6 +41,8 @@ Shop                     Gateway                         EÜRwerk              S
      `PAYMENT.CAPTURE.PENDING`, `PAYMENT.CAPTURE.DENIED`, `PAYMENT.CAPTURE.DECLINED`
 
 3. Im EÜRwerk-Webhook-Bereich einen Endpunkt für `invoice.paid` auf den Shop anlegen.
+4. Verbindung prüfen: `GET /v1/providers` → `{ "providers": ["stripe", "paypal", "wero"] }`
+   (nur in EÜRwerk eingerichtete Zahlungsarten; ungültiger Key → `401`). Der Shop bietet nur diese an.
 
 ### Wero
 
@@ -60,15 +62,29 @@ Authorization: Bearer ewk_live_…
   "reference": "<Transaction.id im Shop>",
   "customer": { "id": "<customerId>", "email": "…", "firstName": "…", "lastName": "…",
                 "address": { "line1": "…", "postalCode": "…", "city": "…", "country": "DE" } },
-  "items": [{ "name": "Lizenz", "quantity": 1, "unitAmount": 1190, "taxRate": 19 }],
+  "tax": { "country": "AT", "regime": "OSS" },
+  "items": [{ "name": "Lizenz", "quantity": 1, "unitNetAmount": 1000, "taxRate": 20 }],
   "successUrl": "https://www.themodbase.com/checkout/approve/<transactionId>",
   "cancelUrl": "https://www.themodbase.com/checkout"
 }
 ```
 
-- `provider`: `stripe` | `paypal` | `wero`; `unitAmount` = **Bruttopreis in Cent**; `taxRate` 0/7/19.
+- `provider`: `stripe` | `paypal` | `wero`.
+- **Nettopreise sind fest:** `unitNetAmount` = Nettopreis pro Stück in Cent. `taxRate` und `tax`
+  (Land + Regime) kommen aus EÜRwerk (`GET /api/v1/tax/rate`, TASK-PGW-08) – Satz 0–30 %, max. 2
+  Nachkommastellen (z.B. `25.5`). Bei `SMALL_BUSINESS`, `REVERSE_CHARGE` und `NON_EU` muss jeder
+  Satz `0` sein (sonst `400`).
+- **Steuer oben drauf (Shop muss für die Anzeige identisch rechnen):** je Steuersatz
+  `netto = Σ nettoProStück × menge` und `steuer = Math.round(netto × satz / 100)` (Cent, einmal
+  pro Satz gerundet – identisch zu EÜRwerk im Netto-Modus); `amountNet = Σ netto`,
+  `amountTax = Σ steuer`, `amountTotal = amountNet + amountTax`.
+  Beispiel: 3 × 8,39 € bei 19 % → 25,17 € + 4,78 € = 29,95 €.
+- Eingezogen wird `amountTotal`. Stripe zeigt die Positionen netto plus je Satz eine Zeile
+  „Umsatzsteuer 19 % (DE)“, PayPal netto plus `tax_total`. EÜRwerk erhält die Rechnung mit
+  **Nettopreisen** (`priceMode: 'NET'`) und `taxCountry`/`taxRegime` → Rechnungsbetrag = gezahlter
+  Betrag (das Gateway warnt im Log, falls EÜRwerk anders rechnet).
 - Antwort `201`: `id` (z.B. `paypal.5O190127TN364715T` → `Transaction.externalTransactionId`),
-  `redirectUrl`, `status: PENDING`.
+  `redirectUrl`, `status: PENDING`, `tax`, `amountNet`, `amountTax`, `amountTotal`.
 - Fehler: `401` Key ungültig/widerrufen · `422` Provider in EÜRwerk nicht eingerichtet · `400`
   Validierung · `502` EÜRwerk/Provider nicht erreichbar.
 

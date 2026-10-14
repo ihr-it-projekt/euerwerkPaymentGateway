@@ -1,8 +1,9 @@
 # EÜRwerk Payment Gateway
 
-Zustandsloser Hono-Service zwischen **TBShop** und **EÜRwerk** (Buchhaltung). Löst BillDynamics im
-Shop ab, bindet **Stripe**, **PayPal** und **Wero** (über Stripe) an und verbucht bezahlte
-Bestellungen automatisch in EÜRwerk (Rechnung brutto → festschreiben → Zahlung buchen).
+Zustandsloser Hono-Service zwischen **TBShop** und **EÜRwerk** (Buchhaltung). Zahlungsweg im Shop
+**parallel zu BillDynamics** (Publisher wählen selbst), bindet **Stripe**, **PayPal** und **Wero**
+(über Stripe) an und verbucht bezahlte Bestellungen automatisch in EÜRwerk (Rechnung brutto →
+festschreiben → Zahlung buchen).
 
 - **Keine Datenhaltung:** Der Shop sendet den EÜRwerk-API-Key (`Authorization: Bearer ewk_live_…`);
   Provider-Zugangsdaten kommen pro Request aus EÜRwerk, Checkout-Daten liegen beim Provider,

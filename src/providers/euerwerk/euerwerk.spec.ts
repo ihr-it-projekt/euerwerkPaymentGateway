@@ -67,7 +67,7 @@ describe('EuerwerkAccountingGateway', () => {
 		expect(second).toBe(first);
 	});
 
-	it('legt Rechnungen brutto an, schreibt fest und bucht mit ISO-Datum', async () => {
+	it('legt Rechnungen netto an (Steuer obendrauf), schreibt fest und bucht mit ISO-Datum', async () => {
 		const apiKey = euerwerkMock.registerTenant(buildPaymentConfig());
 		const paymentDate = new Date('2026-10-13T10:00:00Z');
 
@@ -75,7 +75,8 @@ describe('EuerwerkAccountingGateway', () => {
 			contactId: 'c1',
 			externalReference: 'stripe.cs_1',
 			headerText: 'Bestellung 1',
-			items: [{ name: 'A', quantity: 2, unitPriceGross: 11.9, taxRate: 19 }]
+			tax: { country: 'AT', regime: 'OSS' },
+			items: [{ name: 'A', quantity: 2, unitPriceNet: 10, taxRate: 19 }]
 		});
 		await accounting.finalizeInvoice(apiKey, invoice.id);
 		await accounting.bookPayment(apiKey, invoice.id, {
@@ -89,8 +90,10 @@ describe('EuerwerkAccountingGateway', () => {
 			contactId: 'c1',
 			externalReference: 'stripe.cs_1',
 			headerText: 'Bestellung 1',
-			priceMode: 'GROSS',
-			items: [{ name: 'A', quantity: 2, unitPrice: 11.9, taxRate: 19 }]
+			taxCountry: 'AT',
+			taxRegime: 'OSS',
+			priceMode: 'NET',
+			items: [{ name: 'A', quantity: 2, unitPrice: 10, taxRate: 19 }]
 		});
 		expect(requestLog.find('POST', /book-amount$/)[0]?.body).toMatchObject({
 			paymentDate: paymentDate.toISOString()

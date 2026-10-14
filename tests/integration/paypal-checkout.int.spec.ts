@@ -34,7 +34,7 @@ describe('PayPal – zustandsloser Ablauf', () => {
 		const checkout = await createCheckout(app, tenant.apiKey, {
 			provider: 'paypal',
 			reference: 'ORDER-9',
-			items: [{ name: 'Erweiterung', quantity: 3, unitAmount: 999, taxRate: 7 }]
+			items: [{ name: 'Erweiterung', quantity: 3, unitNetAmount: 1000, taxRate: 7 }]
 		});
 
 		expect(checkout.id).toMatch(/^paypal\./);
@@ -45,8 +45,11 @@ describe('PayPal – zustandsloser Ablauf', () => {
 				{
 					reference_id: 'ORDER-9',
 					custom_id: expect.stringMatching(/^pgw:/) as string,
-					amount: { value: '29.97' },
-					items: [{ quantity: '3', sku: 'pgw-tax-7', unit_amount: { value: '9.99' } }]
+					amount: {
+						value: '32.10',
+						breakdown: { item_total: { value: '30.00' }, tax_total: { value: '2.10' } }
+					},
+					items: [{ quantity: '3', sku: 'pgw-tax-7', unit_amount: { value: '10.00' } }]
 				}
 			]
 		});

@@ -1,4 +1,4 @@
-import type { Customer, TaxRate } from '../../checkout/models/checkout.schema.ts';
+import type { Customer, TaxInfo, TaxRate } from '../../checkout/models/checkout.schema.ts';
 
 export type AccountingPaymentMethod = 'STRIPE' | 'PAYPAL' | 'WERO';
 
@@ -6,8 +6,8 @@ export interface AccountingInvoiceItem {
 	name: string;
 	description?: string;
 	quantity: number;
-	/** Brutto-Einzelpreis in EUR (Dezimal) – Rechnung mit `priceMode: 'GROSS'`. */
-	unitPriceGross: number;
+	/** Netto-Einzelpreis in EUR (Dezimal) – Rechnung mit `priceMode: 'NET'`, Steuer obendrauf. */
+	unitPriceNet: number;
 	taxRate: TaxRate;
 }
 
@@ -16,6 +16,8 @@ export interface AccountingInvoiceDraft {
 	/** Idempotenz-Schlüssel in EÜRwerk (eindeutig pro Mandant) = Checkout-ID des Gateways. */
 	externalReference: string;
 	headerText: string;
+	/** Steuerland/-regime für OSS, Reverse Charge, Kleinunternehmer (EÜRwerk TASK-PGW-08). */
+	tax: TaxInfo;
 	items: AccountingInvoiceItem[];
 }
 
@@ -24,6 +26,8 @@ export type AccountingInvoiceStatus = 'DRAFT' | 'OPEN' | 'PAID' | 'PARTIALLY_PAI
 export interface AccountingInvoice {
 	id: string;
 	status: AccountingInvoiceStatus;
+	/** Von EÜRwerk berechneter Rechnungsbetrag in EUR – muss dem eingezogenen Betrag entsprechen. */
+	grossAmount: number;
 }
 
 export interface AccountingPayment {

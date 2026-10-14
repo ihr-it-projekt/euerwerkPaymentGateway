@@ -6,5 +6,10 @@ export const STRIPE_META = {
 	provider: 'pgw_provider',
 	reference: 'pgw_reference',
 	contactId: 'pgw_contact_id',
-	taxRate: 'pgw_tax_rate'
+	taxCountry: 'pgw_tax_country',
+	taxRegime: 'pgw_tax_regime',
+	amountNet: 'pgw_amount_net',
+	taxRate: 'pgw_tax_rate',
+	/** `tax` = Steuerzeile (nicht als Rechnungsposition übernehmen) */
+	kind: 'pgw_kind'
 } as const;

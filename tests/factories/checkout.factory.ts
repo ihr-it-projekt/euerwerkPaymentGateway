@@ -1,9 +1,11 @@
 import { faker } from '@faker-js/faker';
+import { priceCheckout } from '#src/domain/checkout/helpers/price-checkout.helper.ts';
 import type {
 	CheckoutRequest,
 	CreateCheckoutInput,
 	Customer,
-	LineItem
+	LineItem,
+	TaxInfo
 } from '#src/domain/checkout/models/checkout.schema.ts';
 
 export const buildCustomer = (overrides: Partial<Customer> = {}): Customer => ({
@@ -20,10 +22,13 @@ export const buildCustomer = (overrides: Partial<Customer> = {}): Customer => ({
 	...overrides
 });
 
+export const DOMESTIC_TAX: TaxInfo = { country: 'DE', regime: 'DOMESTIC' };
+
+/** Position mit festem Nettopreis. */
 export const buildLineItem = (overrides: Partial<LineItem> = {}): LineItem => ({
 	name: faker.commerce.productName(),
 	quantity: faker.number.int({ min: 1, max: 3 }),
-	unitAmount: faker.number.int({ min: 100, max: 50_000 }),
+	unitNetAmount: faker.number.int({ min: 100, max: 50_000 }),
 	taxRate: 19,
 	...overrides
 });
@@ -35,6 +40,7 @@ export const buildCreateCheckoutInput = (
 	reference: faker.string.alphanumeric(12),
 	currency: 'EUR',
 	customer: buildCustomer(),
+	tax: DOMESTIC_TAX,
 	items: [buildLineItem()],
 	successUrl: faker.internet.url(),
 	cancelUrl: faker.internet.url(),
@@ -42,12 +48,10 @@ export const buildCreateCheckoutInput = (
 	...overrides
 });
 
-export const buildCheckoutRequest = (overrides: Partial<CheckoutRequest> = {}): CheckoutRequest => {
-	const input = buildCreateCheckoutInput(overrides);
-	return {
-		...input,
-		amountTotal: input.items.reduce((sum, item) => sum + item.unitAmount * item.quantity, 0),
-		contactId: faker.string.uuid(),
-		...overrides
-	};
+export const buildCheckoutRequest = (
+	overrides: Partial<CreateCheckoutInput> & { contactId?: string } = {}
+): CheckoutRequest => {
+	const { contactId = faker.string.uuid(), ...inputOverrides } = overrides;
+	const input = buildCreateCheckoutInput(inputOverrides);
+	return { ...input, ...priceCheckout(input.items), contactId };
 };

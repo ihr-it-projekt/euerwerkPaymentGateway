@@ -12,6 +12,24 @@
 
 ## Gateway
 
+- **Für den TBShop** (siehe `TBShop/todo/payment-gateway/`):
+  - ✅ `GET /v1/providers`, feste Nettopreise (`unitNetAmount`) mit Steuer oben drauf (je Satz
+    auf die Nettosumme, Rechnung in EÜRwerk mit `priceMode: 'NET'`), OSS-Sätze (0–30 %, 2
+    Nachkommastellen) und Steuer-Infos (`tax.country`/`tax.regime` → EÜRwerk `taxCountry`/
+    `taxRegime`) – umgesetzt 13.10.2026.
+  - **PayPal-Sandbox prüfen:** Positionen netto ohne Steuer je Position, Steuer nur in
+    `breakdown.tax_total`. Lehnt PayPal das ab (`TAX_TOTAL_MISMATCH`), die Steuer je Satz auf die
+    Positionen verteilen (`items[].tax`, Restcent auf die letzte Position).
+  - **Bestehende Rechnung bezahlen** – Checkout mit `invoiceId` einer bereits festgeschriebenen
+    EÜRwerk-Rechnung (Publisher-Gebühren); nach Zahlung nur `book-amount`, keine zweite Rechnung.
+    Nur nötig, wenn der Shop Gebühren über EÜRwerk abrechnet (Shop-Task 00/08).
+  - **`externalReference` im EÜRwerk-Webhook** – EÜRwerk `TASK-PGW-07`.
+  - **Steuersatz nicht gegengeprüft** – das Gateway übernimmt Satz/Regime vom Shop (der den Key
+    des Mandanten hat). Optional: Satz beim Checkout selbst bei EÜRwerk (`GET /tax/rate`)
+    verifizieren.
+  - **EÜRwerk muss OSS-Sätze und `taxCountry`/`taxRegime` annehmen** (`TASK-PGW-08`) – bis dahin
+    lehnt EÜRwerk Rechnungen mit anderen Sätzen als 0/7/19 ab (Buchung → 502, Provider-Retry).
+
 4. **Kein Statuswechsel ohne Buchung sichtbar für den Shop** – fehlgeschlagene/abgelaufene
    Zahlungen erzeugen keinen EÜRwerk-Webhook. Der Shop erfährt sie über `GET /v1/checkouts/:id`
    (Rücksprung/Cronjob für Pending-Transaktionen).

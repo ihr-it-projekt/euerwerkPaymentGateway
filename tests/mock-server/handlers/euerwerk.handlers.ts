@@ -26,8 +26,25 @@ const tenantOf = (request: Request): Tenant | undefined =>
 const unauthorized = (): Response =>
 	HttpResponse.json({ error: 'Nicht authentifiziert' }, { status: 401 });
 
-const grossOf = (items: { quantity: number; unitPrice: number }[]): number =>
-	Math.round(items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0) * 100) / 100;
+interface MockItem {
+	quantity: number;
+	unitPrice: number;
+	taxRate: number;
+}
+
+/** Wie EÜRwerk (`calculate-totals-net.helper.ts`): Steuer je Satz auf die Netto-Gruppensumme. */
+const grossOf = (items: MockItem[]): number => {
+	const netByRate = new Map<number, number>();
+	for (const item of items) {
+		const net = Math.round(item.quantity * item.unitPrice * 100);
+		netByRate.set(item.taxRate, (netByRate.get(item.taxRate) ?? 0) + net);
+	}
+	const cents = [...netByRate].reduce(
+		(sum, [rate, net]) => sum + net + Math.round(net * (rate / 100)),
+		0
+	);
+	return cents / 100;
+};
 
 const findInvoice = (tenant: Tenant, id: string): MockInvoice | undefined =>
 	[...tenant.invoices.values()].find((invoice) => invoice.id === id);
@@ -77,7 +94,7 @@ export const euerwerkHandlers = [
 			if (!tenant) return unauthorized();
 			const body = (await request.json()) as MockInvoice['body'] & {
 				externalReference: string;
-				items: { quantity: number; unitPrice: number }[];
+				items: MockItem[];
 			};
 			const existing = tenant.invoices.get(body.externalReference);
 			if (existing) return HttpResponse.json(existing, { status: 200 });

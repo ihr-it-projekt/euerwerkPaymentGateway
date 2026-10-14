@@ -1,6 +1,7 @@
 import type { AppDependencies } from './app.ts';
 import type { Env } from './config/env.ts';
 import { BookPaymentAction } from './domain/accounting/actions/book-payment.action.ts';
+import { GetProvidersAction } from './domain/config/actions/get-providers.action.ts';
 import { CreateCheckoutAction } from './domain/checkout/actions/create-checkout.action.ts';
 import { GetCheckoutAction } from './domain/checkout/actions/get-checkout.action.ts';
 import { HandleProviderWebhookAction } from './domain/payment/actions/handle-provider-webhook.action.ts';
@@ -63,6 +64,7 @@ export const buildDependencies = (config: GatewayConfig, logger: Logger): AppDep
 			createCheckout: new CreateCheckoutAction({ configSource, accounting, providers }),
 			getCheckout: new GetCheckoutAction({ configSource, providers })
 		},
+		getProviders: new GetProvidersAction(configSource),
 		getWebhookEndpoints: new GetWebhookEndpointsAction({
 			configSource,
 			keyCodec,
@@ -72,7 +74,7 @@ export const buildDependencies = (config: GatewayConfig, logger: Logger): AppDep
 			keyCodec,
 			configSource,
 			webhookProcessors,
-			bookPayment: new BookPaymentAction(accounting),
+			bookPayment: new BookPaymentAction({ accounting, logger }),
 			logger
 		})
 	};

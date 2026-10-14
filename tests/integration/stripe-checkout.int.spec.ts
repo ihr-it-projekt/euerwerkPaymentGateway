@@ -42,10 +42,16 @@ describe('Stripe – zustandsloser Ablauf', () => {
 		const checkout = await createCheckout(app, tenant.apiKey, {
 			provider: 'stripe',
 			reference: 'ORDER-42',
-			items: [{ name: 'Lizenz', quantity: 2, unitAmount: 1190, taxRate: 19 }]
+			items: [{ name: 'Lizenz', quantity: 2, unitNetAmount: 1000, taxRate: 19 }]
 		});
 
-		expect(checkout).toMatchObject({ provider: 'stripe', status: 'PENDING', amountTotal: 2380 });
+		expect(checkout).toMatchObject({
+			provider: 'stripe',
+			status: 'PENDING',
+			amountNet: 2000,
+			amountTax: 380,
+			amountTotal: 2380
+		});
 		expect(checkout.id).toMatch(/^stripe\.cs_test_/);
 		const [contactCall] = requestLog.find('POST', /\/contacts$/);
 		expect(contactCall?.body).toMatchObject({ externalSource: 'payment-gateway' });
@@ -70,10 +76,10 @@ describe('Stripe – zustandsloser Ablauf', () => {
 		expect((await getCheckout(app, tenant.apiKey, checkout.id)).status).toBe('SUCCEEDED');
 	});
 
-	it('bucht nach checkout.session.completed brutto und idempotent in EÜRwerk', async () => {
+	it('bucht nach checkout.session.completed netto + Steuer und idempotent in EÜRwerk', async () => {
 		const checkout = await createCheckout(app, tenant.apiKey, {
 			reference: 'ORDER-7',
-			items: [{ name: 'Lizenz', quantity: 1, unitAmount: 999, taxRate: 19 }]
+			items: [{ name: 'Lizenz', quantity: 1, unitNetAmount: 840, taxRate: 19 }]
 		});
 
 		const response = await paySession(providerRef(checkout));
@@ -83,15 +89,15 @@ describe('Stripe – zustandsloser Ablauf', () => {
 		expect(invoice).toMatchObject({
 			status: 'PAID',
 			externalReference: checkout.id,
-			grossAmount: 9.99
+			grossAmount: 10
 		});
 		expect(invoice?.body).toMatchObject({
-			priceMode: 'GROSS',
+			priceMode: 'NET',
 			headerText: 'Bestellung ORDER-7',
-			items: [{ name: 'Lizenz', quantity: 1, unitPrice: 9.99, taxRate: 19 }]
+			items: [{ name: 'Lizenz', quantity: 1, unitPrice: 8.4, taxRate: 19 }]
 		});
 		const [booking] = requestLog.find('POST', /book-amount$/);
-		expect(booking?.body).toMatchObject({ amount: 9.99, paymentMethod: 'STRIPE' });
+		expect(booking?.body).toMatchObject({ amount: 10, paymentMethod: 'STRIPE' });
 	});
 
 	it('verarbeitet doppelte Webhooks ohne Doppelbuchung', async () => {

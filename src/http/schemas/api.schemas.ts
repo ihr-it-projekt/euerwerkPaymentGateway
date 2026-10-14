@@ -1,7 +1,8 @@
 import { z } from '@hono/zod-openapi';
 import {
 	CheckoutStatusSchema,
-	ProviderNameSchema
+	ProviderNameSchema,
+	TaxInfoSchema
 } from '../../domain/checkout/models/checkout.schema.ts';
 
 export const ErrorResponseSchema = z
@@ -21,7 +22,10 @@ export const CheckoutViewSchema = z
 		status: CheckoutStatusSchema,
 		reference: z.string().describe('Bestell-/Transaktions-ID im Shop'),
 		currency: z.string(),
-		amountTotal: z.int().describe('Bruttosumme in Cent'),
+		tax: TaxInfoSchema,
+		amountNet: z.int().describe('Nettosumme in Cent (Summe der festen Nettopreise)'),
+		amountTax: z.int().describe('Umsatzsteuer in Cent'),
+		amountTotal: z.int().describe('Bruttosumme in Cent – wird eingezogen'),
 		redirectUrl: z.string().nullable().describe('URL, auf die der Shop den Kunden weiterleitet'),
 		providerPaymentId: z.string().nullable()
 	})
